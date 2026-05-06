@@ -1,0 +1,20 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="python-docx" />
+          <option value="html2text" />
+          <option value="striprtf" />
+          <option value="pdfminer.six" />
+          <option value="ebooklib" />
+          <option value="pandas" />
+          <option value="tabulate" />
+          <option value="tkinterdnd2" />
+          <option value="pyinstaller" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
