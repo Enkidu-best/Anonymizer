@@ -55,7 +55,9 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             stem = stem[len(pfx):]
             break
 
-    output_name = f'{prefix}_{stem}{ext}'
+    # PDFs always converted to DOCX (better quality, reliable deanonymization)
+    out_ext = '.docx' if ext == '.pdf' else ext
+    output_name = f'{prefix}_{stem}{out_ext}'
     output_path = output_dir / output_name
 
     if mode == 'anonymize':
@@ -64,6 +66,10 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
         result = _deanonymize(input_path, output_path, ext, session_id, db_path)
 
     result['output_filename'] = output_name
+    # Fallback PDF path: pdf2docx failed, file saved as .pdf despite .docx expectation
+    if '_fallback_path' in result:
+        fallback = Path(result.pop('_fallback_path'))
+        result['output_filename'] = fallback.name
     return result
 
 
@@ -190,17 +196,20 @@ def _anon_docx(input_path, output_path, session_id, db_path, use_llm=False):
     doc = Document(str(input_path))
     _accept_tracked_changes(doc)
 
-    # Run sequential pipeline on full text to build the replacement dict
-    full_text   = _collect_docx_text(doc)
-    _, reps     = anonymize_text_sequential(full_text, db_path, session_id, use_llm)
-
-    # Apply the same replacements to each paragraph in the document
-    if reps:
-        for para in _iter_all_paras(doc):
+    # Process each paragraph independently so NER sees the actual grammatical form
+    # (genitive, dative, etc.) present in each paragraph, not the nominative from
+    # a concatenated full-text pass that would mismatch on replacement.
+    total_reps = {}
+    for para in _iter_all_paras(doc):
+        if not para.text.strip():
+            continue
+        _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm)
+        if reps:
             _replace_para(para, reps)
+            total_reps.update(reps)
 
     doc.save(str(output_path))
-    return {'entities_found': len(reps)}
+    return {'entities_found': len(total_reps)}
 
 
 def _deanon_docx(input_path, output_path, rev):
@@ -258,9 +267,47 @@ def _find_cyrillic_font() -> str | None:
 
 
 def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
-    import fitz
+    """
+    Convert PDF → DOCX via pdf2docx (preserves layout/fonts), then anonymize
+    per-paragraph. Output is .docx — much better quality than in-place PDF redaction.
+    Falls back to raw-text redaction if conversion fails.
+    """
+    import tempfile
     from core.anonymizer import anonymize_text_sequential
 
+    # ── Step 1: PDF → DOCX conversion ────────────────────────────────────────
+    tmp_docx = Path(tempfile.mktemp(suffix='.docx'))
+    converted = False
+    try:
+        from pdf2docx import Converter
+        cv = Converter(str(input_path))
+        cv.convert(str(tmp_docx), start=0, end=None)
+        cv.close()
+        converted = True
+    except Exception as conv_err:
+        print(f'[PDF] pdf2docx conversion failed: {conv_err}. Falling back to text redaction.')
+
+    if converted:
+        # ── Step 2: anonymize the DOCX per-paragraph ─────────────────────────
+        from docx import Document
+        doc = Document(str(tmp_docx))
+        total_reps = {}
+        for para in _iter_all_paras(doc):
+            if not para.text.strip():
+                continue
+            _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm)
+            if reps:
+                _replace_para(para, reps)
+                total_reps.update(reps)
+        doc.save(str(output_path))
+        try:
+            tmp_docx.unlink()
+        except Exception:
+            pass
+        return {'entities_found': len(total_reps)}
+
+    # ── Fallback: in-place PDF text redaction (scanned / complex PDFs) ────────
+    import fitz
     doc      = fitz.open(str(input_path))
     all_text = '\n'.join(p.get_text() for p in doc)
     _, reps  = anonymize_text_sequential(all_text, db_path, session_id, use_llm)
@@ -270,7 +317,6 @@ def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
         for page in doc:
             avg_fsize = _detect_avg_fontsize(page)
             for orig, token in sorted_reps:
-                # Search for both the original and without brackets (PDF search is exact)
                 for rect in page.search_for(orig):
                     page.add_redact_annot(
                         rect, text=token,
@@ -279,21 +325,54 @@ def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
                     )
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-    doc.save(str(output_path), garbage=4, deflate=True)
-    return {'entities_found': len(reps)}
+    # fallback saves as PDF (note: output_path will have .docx extension from
+    # process_uploaded_file — rename back to .pdf for the fallback case)
+    pdf_out = output_path.with_suffix('.pdf')
+    doc.save(str(pdf_out), garbage=4, deflate=True)
+    return {'entities_found': len(reps), '_fallback_path': str(pdf_out)}
 
 
 def _deanon_pdf(input_path, output_path, rev):
-    import fitz
-    from core.anonymizer import apply_reverse
+    """
+    Convert PDF → DOCX via pdf2docx, then deanonymize as DOCX.
+    output_path already has .docx extension (set in process_uploaded_file).
+    Falls back to fitz text substitution if conversion fails.
+    """
+    import tempfile
 
     if not rev:
-        import shutil; shutil.copy2(str(input_path), str(output_path)); return {}
+        import shutil
+        shutil.copy2(str(input_path), str(output_path.with_suffix('.pdf')))
+        return {'_fallback_path': str(output_path.with_suffix('.pdf'))}
+
+    # Try pdf2docx conversion
+    tmp_docx = Path(tempfile.mktemp(suffix='.docx'))
+    converted = False
+    try:
+        from pdf2docx import Converter
+        cv = Converter(str(input_path))
+        cv.convert(str(tmp_docx), start=0, end=None)
+        cv.close()
+        converted = True
+        print(f'[PDF deanon] pdf2docx conversion OK → {tmp_docx.name}')
+    except Exception as conv_err:
+        print(f'[PDF deanon] pdf2docx failed: {conv_err}. Falling back to fitz.')
+
+    if converted:
+        result = _deanon_docx(tmp_docx, output_path, rev)
+        try:
+            tmp_docx.unlink()
+        except Exception:
+            pass
+        return result
+
+    # ── Fallback: fitz text substitution (lower quality) ──────────────────────
+    import fitz
+    from core.anonymizer import apply_reverse
 
     cyrillic_font = _find_cyrillic_font()
     doc = fitz.open(str(input_path))
 
-    # Build search terms: both [TOKEN] and bare TOKEN
     search_pairs = []
     for tok, orig in rev.items():
         search_pairs.append((f'[{tok}]', orig))
@@ -302,14 +381,13 @@ def _deanon_pdf(input_path, output_path, rev):
 
     for page in doc:
         avg_fsize = _detect_avg_fontsize(page)
+        font_ok = False
         if cyrillic_font:
             try:
                 page.insert_font(fontname='CyrF', fontfile=cyrillic_font)
                 font_ok = True
             except Exception:
-                font_ok = False
-        else:
-            font_ok = False
+                pass
 
         for token_str, orig in search_pairs:
             for rect in page.search_for(token_str):
@@ -325,8 +403,9 @@ def _deanon_pdf(input_path, output_path, rev):
                     except Exception:
                         pass
 
-    doc.save(str(output_path), garbage=4, deflate=True)
-    return {}
+    pdf_out = output_path.with_suffix('.pdf')
+    doc.save(str(pdf_out), garbage=4, deflate=True)
+    return {'_fallback_path': str(pdf_out)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

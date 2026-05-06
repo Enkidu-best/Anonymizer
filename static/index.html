@@ -211,6 +211,7 @@ tr:hover td{background:var(--card2)}
 .t-TEL,.t-EMAIL{background:rgba(251,146,60,.12);color:#fb923c}
 .t-PASSPORT,.t-SNILS,.t-ДАТАРОЖД{background:rgba(167,139,250,.12);color:#a78bfa}
 .t-SWIFT{background:rgba(56,189,248,.12);color:#38bdf8}
+.t-АДРЕС{background:rgba(20,184,166,.12);color:#2dd4bf}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
 
 /* ── TOAST ── */
@@ -306,7 +307,7 @@ tr:hover td{background:var(--card2)}
       <div class="llm-panel hidden" id="llmPanel">
         <span class="llm-panel-label">Ollama LLM</span>
         <label class="llm-toggle">
-          <input type="checkbox" id="llmEnabled" onchange="onLlmToggle()">
+          <input type="checkbox" id="llmEnabled" checked onchange="onLlmToggle()">
           Включить для этой обработки
         </label>
         <select class="llm-select" id="llmModelSelect" onchange="onLlmModelChange()">

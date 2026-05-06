@@ -148,3 +148,44 @@ def extract_entities_llm(text: str, existing_spans: List[Tuple[int, int]]) -> li
             existing_spans.append((s, e))
 
     return all_entities
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API called from anonymizer.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_llm_pass(text: str, db_path, session_id: str):
+    """
+    Run LLM entity extraction as final anonymization pass.
+    Returns (anonymized_text, replacements_dict).
+    Called from anonymize_text_sequential() when use_llm=True.
+    """
+    from core.anonymizer import TOKEN_INNER_RE, _is_bracketed_token, _wrap
+    from core.db import get_or_create_token
+
+    if not _llm_available:
+        print('[LLM] Ollama not available — skipping LLM pass')
+        return text, {}
+
+    model = _llm_model or DEFAULT_MODEL
+    print(f'[LLM] Starting LLM pass, model={model}')
+
+    existing_spans = [(m.start(), m.end()) for m in TOKEN_INNER_RE.finditer(text)]
+    entities = extract_entities_llm(text, existing_spans)
+
+    if not entities:
+        print('[LLM] No additional entities found')
+        return text, {}
+
+    replacements = {}
+    for ent in entities:
+        if ent.original not in replacements and not _is_bracketed_token(ent.original):
+            token = _wrap(get_or_create_token(db_path, session_id, ent.canonical, ent.entity_type))
+            replacements[ent.original] = token
+            print(f'[LLM] Entity: {repr(ent.original[:60])} → {token}')
+
+    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
+        text = text.replace(orig, tok)
+
+    print(f'[LLM] Pass complete — {len(replacements)} new entities')
+    return text, replacements
