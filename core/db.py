@@ -83,6 +83,8 @@ _PREFIX = {
     'ТЕЛЕФОН': 'TEL',
     'EMAIL':   'EMAIL',
     'SWIFT':   'SWIFT',
+    'АДРЕС':   'ADR',
+    'ДАТАРОЖД':'DOB',
 }
 
 
