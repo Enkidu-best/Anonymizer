@@ -117,48 +117,79 @@ def _is_bracketed_token(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Blocklists — words NER misclassifies as person names or org names
+# pymorphy2 name-tag filter for FIO
+# Instead of a blocklist (which can never be complete), we use a POSITIVE check:
+# a NER PER span is accepted as FIO only if pymorphy2 tags at least one word
+# as a Russian proper name (Name/Patr/Surn), or it matches the Surname I.O. pattern.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Single words that should NEVER be FIO (checked per-word for multi-word spans)
-_FIO_WORD_BLOCKLIST = frozenset({
-    'аудитор', 'бенефициар', 'принципал', 'продавец', 'покупатель',
-    'займодавец', 'заёмщик', 'заемщик', 'залогодатель', 'залогодержатель',
-    'поручитель', 'должник', 'кредитор', 'цедент', 'цессионарий',
-    'лицензиар', 'лицензиат', 'арендодатель', 'арендатор',
-    'исполнитель', 'заказчик', 'подрядчик', 'субподрядчик',
-    'комитент', 'комиссионер', 'доверитель', 'поверенный',
-    'хранитель', 'поклажедатель', 'перевозчик', 'отправитель',
-    'страховщик', 'страхователь', 'выгодоприобретатель',
-    'агент', 'гарант', 'плательщик', 'нотариус', 'регистратор',
-    'депозитарий', 'акционер', 'участник', 'учредитель',
-    'директор', 'президент', 'председатель', 'секретарь',
-    'бухгалтер', 'юрист', 'адвокат', 'представитель',
-    'сторона', 'стороны', 'доля', 'акция', 'вкладчик',
-    'трассант', 'трассат', 'общество', 'организация', 'предприятие',
-})
+_pymorphy2_morph = None   # lazy-loaded MorphAnalyzer
 
-# Words/phrases that should NEVER be YUL (public bodies, sections, legal terms)
-_YUL_WORD_BLOCKLIST = frozenset({
-    # Public registries and bodies
-    'егрюл', 'егрип', 'загс', 'фнс', 'фас', 'цб', 'цбр', 'мвд', 'фсб',
-    'гибдд', 'фссп', 'роспотребнадзор', 'росреестр', 'роспатент',
-    # Courts
-    'суд', 'трибунал', 'арбитраж',
-    # Legal role words (same as FIO blocklist — NER sometimes tags ORG instead)
-    'продавец', 'покупатель', 'цедент', 'цессионарий', 'принципал',
-    'агент', 'поручитель', 'залогодатель', 'залогодержатель',
-    'займодавец', 'заемщик', 'арендодатель', 'арендатор',
-    'страховщик', 'страхователь', 'выгодоприобретатель', 'бенефициар',
-    # Document structure words
-    'стороны', 'сторон', 'споры', 'спор', 'участник', 'участников',
-    'уставном', 'капитале', 'уставный', 'капитал',
-    'условия', 'положения', 'обязательства', 'обязательство',
-    'права', 'право', 'раздел', 'пункт',
-    # Other common false-positives
-    'бюро', 'агентство', 'служба', 'управление', 'департамент',
-    'министерство', 'комитет', 'палата', 'инспекция',
-})
+def _get_pymorphy2():
+    """Lazily initialize pymorphy2.MorphAnalyzer. Returns None on failure."""
+    global _pymorphy2_morph
+    if _pymorphy2_morph is None:
+        try:
+            import pymorphy2
+            _pymorphy2_morph = pymorphy2.MorphAnalyzer()
+        except Exception as e:
+            print(f'[FIO] pymorphy2 unavailable: {e}')
+            _pymorphy2_morph = False
+    return _pymorphy2_morph if _pymorphy2_morph is not False else None
+
+
+# ── Compiled patterns for name detection ─────────────────────────────────────
+
+# Surname I.O. — unambiguously a person name
+_FIO_INITIALS_RE = re.compile(
+    r'[А-ЯЁ][а-яё]{1,}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.',
+    re.UNICODE
+)
+
+# Patronymic suffixes — appear ONLY in Russian patronymics
+# (works on all Python versions, no external library needed)
+_PATRONYMIC_RE = re.compile(
+    r'(?:ович|евич|овна|евна|ична|вна|вич)$',
+    re.IGNORECASE | re.UNICODE
+)
+
+
+def _is_fio_span(text: str) -> bool:
+    """
+    Positive structural filter — return True only if the NER PER span
+    looks like a real Russian person name.  No hardcoded blocklist.
+
+    Three-layer check (any layer suffices):
+      1. "Surname I.O." regex — unambiguous initials format.
+      2. Any word ends in a Russian patronymic suffix
+         (-ович/-евич/-овна/-евна/-ична/-вна/-вич).
+         These endings appear EXCLUSIVELY in patronymics, never in
+         role words like Принципал/Агент/Покупатель.
+      3. pymorphy2 Name/Patr/Surn tag — most accurate, used when
+         available (Python ≤ 3.12; unavailable on Python 3.14
+         due to getargspec removal).
+    """
+    # Layer 1 — initials pattern
+    if _FIO_INITIALS_RE.search(text):
+        return True
+
+    # Layer 2 — patronymic suffix (no library dependency)
+    for word in re.findall(r'[А-ЯЁа-яё]{5,}', text):
+        if _PATRONYMIC_RE.search(word):
+            return True
+
+    # Layer 3 — pymorphy2 morphological tags
+    morph = _get_pymorphy2()
+    if morph:
+        for word in re.findall(r'[А-ЯЁа-яё]{3,}', text):
+            try:
+                for parse in morph.parse(word):
+                    if parse.tag.grammemes & {'Name', 'Patr', 'Surn'}:
+                        return True
+            except Exception:
+                pass
+
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,14 +274,15 @@ _OPF_PFX = (
 )
 
 # Prefix forms: OPF «name» or OPF "name"  (most common in Russian docs)
+# Inner group allows ONE nested quote so  ООО "МЗ "Ревякино"  →  МЗ "Ревякино
 _OPF_RE_ANGLE = _p(
     r'(' + _OPF_PFX + r'«)'
-    r'([^»\n]{2,80})'
+    r'([^»\n]{2,60}(?:»[^»\n]{1,60})?)'
     r'(»)'
 )
 _OPF_RE_STRAIGHT = _p(
     r'(' + _OPF_PFX + r'[""])'
-    r'([^""\n]{2,80})'
+    r'([^""\n]{2,60}(?:[""][^""\n]{1,60})?)'
     r'([""])'
 )
 
@@ -405,6 +437,37 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
     ('SWIFT', [
         (_p(r'SWIFT\s*[-:]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
     ]),
+    # ФИО — structural regex patterns (do not depend on NER / Natasha)
+    # Pattern A: Full FIO  Surname Firstname Patronymic  (patronymic ending is the key signal)
+    # Pattern B: Surname I.O.  (initials format)
+    # Pattern C: Signature  / Surname I.O. /  or  / Surname Firstname Patronymic /
+    ('ФИО', [
+        # A — full FIO: 3 capitalised Russian words, 3rd ends in patronymic suffix
+        (_p(
+            r'(?<![А-ЯЁа-яё])'
+            r'([А-ЯЁ][а-яё]{1,20}'           # Surname
+            r'\s+[А-ЯЁ][а-яё]{1,15}'          # Firstname
+            r'\s+[А-ЯЁ][а-яё]*'               # Patronymic start
+            r'(?:ович|евич|овна|евна|ична)[а-яё]*)'  # Patronymic ending
+            r'(?![А-ЯЁа-яё])'
+        ), 1),
+        # B — Surname + two initials  (Иванов А. А.  or  Иванов А.А.)
+        (_p(
+            r'(?<![А-ЯЁа-яё])'
+            r'([А-ЯЁ][а-яё]{2,20}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)'
+            r'(?![А-ЯЁа-яё])'
+        ), 1),
+        # C — signature block  / Surname I.O. /  or  / Surname Firstname Patronymic /
+        (_p(
+            r'/\s*'
+            r'([А-ЯЁ][а-яё]{1,20}'            # Surname
+            r'(?:\s+[А-ЯЁ][а-яё]{1,15}'       # optional Firstname
+            r'(?:\s+[А-ЯЁ][а-яё]*'            # optional Patronymic
+            r'(?:ович|евич|овна|евна|ична)[а-яё]*)?)?'
+            r'(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)?)'  # or initials
+            r'\s*/'
+        ), 1),
+    ]),
     ('ДАТАРОЖД', [
         (_p(r'\b(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\s+(?:года?\s+рожд\w+|рожд\w+)'), 1),
         (_p(r'(?:рожд[ёе]н\w*\s+)(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\b'), 1),
@@ -529,9 +592,17 @@ def retry_ner_loading():
 
 def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
     """
-    Run Natasha NER. Skip spans overlapping existing tokens or matching blocklists.
-    FIO check: any word in the span that's in _FIO_WORD_BLOCKLIST → skip.
-    YUL check: same with _YUL_WORD_BLOCKLIST.
+    Run Natasha NER for FIO (PER) only.
+
+    ORG spans are NOT processed here — organizations are detected exclusively
+    by OPF-based regex in _apply_opf_replacements().  Natasha's ORG tagger
+    produces too many false positives in Russian legal text (common nouns,
+    document section headers, role words tagged as ORG).
+
+    For PER spans, only accept the span if _is_fio_span() returns True:
+    the span must contain a word tagged by pymorphy2 as Name/Patr/Surn, or
+    match the Surname I.O. initials pattern.  This avoids any hardcoded
+    blocklist — the filter is structural/morphological.
     """
     if not _ner_ready:
         return text, {}
@@ -553,7 +624,7 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
     replacements = {}
     skipped = 0
     for span in doc.spans:
-        if span.type not in ('PER', 'ORG'):
+        if span.type != 'PER':          # ORG spans are skipped — YUL only from OPF
             continue
 
         s, e = span.start, span.stop
@@ -564,21 +635,8 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
         if len(original) < 3 or _is_bracketed_token(original):
             continue
 
-        etype = 'ФИО' if span.type == 'PER' else 'ЮЛ'
-
-        # Blocklist check — per-word for multi-word spans
-        words = {w.lower().rstrip('.,;:)(!?') for w in original.split()}
-        if etype == 'ФИО' and (words & _FIO_WORD_BLOCKLIST):
-            skipped += 1
-            continue
-        if etype == 'ЮЛ' and (words & _YUL_WORD_BLOCKLIST):
-            skipped += 1
-            continue
-        # Also exact phrase match
-        if etype == 'ФИО' and original.lower().rstrip('.,') in _FIO_WORD_BLOCKLIST:
-            skipped += 1
-            continue
-        if etype == 'ЮЛ' and original.lower().rstrip('.,') in _YUL_WORD_BLOCKLIST:
+        # Structural / morphological filter — no blocklist needed
+        if not _is_fio_span(original):
             skipped += 1
             continue
 
@@ -589,12 +647,12 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
             canon = original
 
         if original not in replacements:
-            token = _wrap(get_or_create_token(db_path, session_id, canon, etype))
+            token = _wrap(get_or_create_token(db_path, session_id, canon, 'ФИО'))
             replacements[original] = token
 
     if replacements or skipped:
-        print(f'[NER] {len(replacements)} new entities'
-              + (f', {skipped} blocklist skips' if skipped else ''))
+        print(f'[NER] {len(replacements)} FIO found'
+              + (f', {skipped} non-name spans filtered' if skipped else ''))
 
     if replacements:
         for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
