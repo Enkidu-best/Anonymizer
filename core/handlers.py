@@ -196,17 +196,33 @@ def _anon_docx(input_path, output_path, session_id, db_path, use_llm=False):
     doc = Document(str(input_path))
     _accept_tracked_changes(doc)
 
-    # Process each paragraph independently so NER sees the actual grammatical form
-    # (genitive, dative, etc.) present in each paragraph, not the nominative from
-    # a concatenated full-text pass that would mismatch on replacement.
+    all_paras = list(_iter_all_paras(doc))
     total_reps = {}
-    for para in _iter_all_paras(doc):
+
+    # Passes 1-3 (OPF regex, structured regex, NER) — per paragraph so NER sees
+    # each paragraph's actual grammatical form (genitive/dative/etc.)
+    for para in all_paras:
         if not para.text.strip():
             continue
-        _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm)
+        _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm=False)
         if reps:
             _replace_para(para, reps)
             total_reps.update(reps)
+
+    # Pass 4 (LLM) — single call on full document text to avoid N×timeout hangs
+    if use_llm:
+        try:
+            from core.llm import apply_llm_pass
+            combined = '\n'.join(p.text for p in all_paras if p.text.strip())
+            _, llm_reps = apply_llm_pass(combined, db_path, session_id)
+            if llm_reps:
+                for para in all_paras:
+                    if para.text.strip():
+                        _replace_para(para, llm_reps)
+                total_reps.update(llm_reps)
+                print(f'[LLM] Applied {len(llm_reps)} entity(ies) to document')
+        except Exception as ex:
+            print(f'[LLM] Document-level pass error: {ex}')
 
     doc.save(str(output_path))
     return {'entities_found': len(total_reps)}
@@ -288,17 +304,33 @@ def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
         print(f'[PDF] pdf2docx conversion failed: {conv_err}. Falling back to text redaction.')
 
     if converted:
-        # ── Step 2: anonymize the DOCX per-paragraph ─────────────────────────
+        # ── Step 2: anonymize the DOCX per-paragraph (LLM at document level) ─
         from docx import Document
         doc = Document(str(tmp_docx))
+        all_paras = list(_iter_all_paras(doc))
         total_reps = {}
-        for para in _iter_all_paras(doc):
+
+        for para in all_paras:
             if not para.text.strip():
                 continue
-            _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm)
+            _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm=False)
             if reps:
                 _replace_para(para, reps)
                 total_reps.update(reps)
+
+        if use_llm:
+            try:
+                from core.llm import apply_llm_pass
+                combined = '\n'.join(p.text for p in all_paras if p.text.strip())
+                _, llm_reps = apply_llm_pass(combined, db_path, session_id)
+                if llm_reps:
+                    for para in all_paras:
+                        if para.text.strip():
+                            _replace_para(para, llm_reps)
+                    total_reps.update(llm_reps)
+            except Exception as ex:
+                print(f'[LLM] PDF document-level pass error: {ex}')
+
         doc.save(str(output_path))
         try:
             tmp_docx.unlink()

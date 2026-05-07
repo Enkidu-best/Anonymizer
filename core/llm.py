@@ -66,6 +66,68 @@ def set_model(model: str):
     _llm_model = model
 
 
+def try_start_ollama() -> bool:
+    """
+    Try to start the Ollama daemon if it is not running.
+    Works on Windows, macOS, and Linux.
+    Returns True if Ollama becomes available after the attempt.
+    """
+    import subprocess
+    import platform
+    import time
+    import os
+
+    system = platform.system()
+    creationflags = 0
+    if system == 'Windows':
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+
+    def _spawn(*args):
+        try:
+            subprocess.Popen(
+                list(args),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
+    started = False
+    if system == 'Windows':
+        local_app = os.environ.get('LOCALAPPDATA', '')
+        candidates = [
+            os.path.join(local_app, 'Programs', 'Ollama', 'ollama.exe'),
+            r'C:\Program Files\Ollama\ollama.exe',
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                started = _spawn(path, 'serve')
+                break
+        if not started:
+            started = _spawn('ollama', 'serve')
+
+    elif system == 'Darwin':
+        # Try GUI app first (it starts the server automatically)
+        if not _spawn('open', '-a', 'Ollama'):
+            started = _spawn('ollama', 'serve')
+        else:
+            started = True
+
+    else:  # Linux / other
+        started = _spawn('ollama', 'serve')
+
+    if started:
+        print('[LLM] Ollama start command sent, waiting 3 s...')
+        time.sleep(3)
+        result = check_ollama()
+        print(f'[LLM] Ollama available: {result.get("available")}')
+        return result.get('available', False)
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entity extraction via LLM
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,7 +160,7 @@ def _ollama_generate(prompt: str, model: str) -> str:
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
     return data.get('response', '')
 
