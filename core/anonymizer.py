@@ -1,14 +1,12 @@
 """
 Entity detection — sequential pipeline:
-  Pass 1 – Regex   (INN, OGRN, accounts, phones, OPF org names)
-  Pass 2 – Natasha NER on ALREADY-anonymized text (finds what regex missed)
-  Pass 3 – LLM via Ollama (optional)
+  Pass 1 – OPF regex  (org names in quotes, both prefix and suffix OPF forms)
+  Pass 2 – Structured regex (INN, OGRN, accounts, phones, addresses, etc.)
+  Pass 3 – Natasha NER (finds PER/ORG missed by regex)
+  Pass 4 – LLM via Ollama (optional, called once per document from handlers)
 
 Token format: [FIO_1], [INN_2], [YUL_3] etc.
-Tokens are recognizable by NER/LLM so they skip already-processed spans.
-
-anonymize_text_sequential() returns (anonymized_text, replacements_dict)
-so DOCX/PDF/XLSX handlers can apply the SAME replacements to their own content.
+anonymize_text_sequential() returns (anonymized_text, replacements_dict).
 """
 
 import re
@@ -19,7 +17,7 @@ from typing import List, Tuple, Dict
 
 # ── pkg_resources polyfill ────────────────────────────────────────────────────
 # pymorphy2 uses pkg_resources.WorkingSet + iter_entry_points.
-# These are missing/broken in Python 3.12+ venvs and in PyInstaller frozen exes.
+# Broken in Python 3.12+ new setuptools and in PyInstaller frozen .exe.
 
 def _make_pkg_resources_polyfill():
     import types
@@ -28,8 +26,8 @@ def _make_pkg_resources_polyfill():
     pkg = types.ModuleType('pkg_resources')
 
     def _iter_ep(group):
-        # In PyInstaller frozen exe, importlib.metadata may find nothing.
-        # Try direct import of pymorphy2_dicts as a reliable fallback.
+        # In frozen PyInstaller env distributions() returns nothing —
+        # fall back to direct import of pymorphy2_dicts.
         if group == 'pymorphy2_dicts':
             try:
                 import pymorphy2_dicts
@@ -41,7 +39,6 @@ def _make_pkg_resources_polyfill():
                 return
             except ImportError:
                 pass
-        # Normal path: iterate installed distributions
         try:
             for dist in _m.distributions():
                 eps = dist.entry_points
@@ -70,8 +67,7 @@ def _make_pkg_resources_polyfill():
 
 
 def _needs_polyfill() -> bool:
-    # Always polyfill in PyInstaller frozen exe — pkg_resources can't scan bundled dists
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, 'frozen', False):   # always polyfill in PyInstaller .exe
         return True
     try:
         import pkg_resources
@@ -93,8 +89,8 @@ if _needs_polyfill():
 
 @dataclass
 class Entity:
-    original:    str   # exact text in document
-    canonical:   str   # normalised (nominative for names)
+    original:    str
+    canonical:   str
     entity_type: str
     start:       int
     end:         int
@@ -121,104 +117,124 @@ def _is_bracketed_token(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FIO blocklist — job titles / legal roles that NER misclassifies as persons
+# Blocklists — words NER misclassifies as person names or org names
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FIO_BLOCKLIST = frozenset({
-    # Legal roles
-    'аудитор',            # аудитор
-    'бенефициар',       # бенефициар
-    'принципал',          # принципал
-    'продавец',            # продавец
-    'покупатель',         # покупатель
-    'займодавец',          # займодавец
-    'заёмщик',            # заёмщик
-    'заемщик',            # заемщик
-    'залогодатель',       # залогодатель
-    'залогодержатель',    # залогодержатель
-    'поручитель',         # поручитель
-    'должник',            # должник
-    'кредитор',           # кредитор
-    'цедент',               # цедент
-    'цессионарий',        # цессионарий
-    'лицензиар',          # лицензиар
-    'лицензиат',          # лицензиат
-    'арендодатель',       # арендодатель
-    'арендатор',          # арендатор
-    'исполнитель',        # исполнитель
-    'заказчик',           # заказчик
-    'подрядчик',          # подрядчик
-    'субподрядчик',       # субподрядчик
-    'комитент',           # комитент
-    'комиссионер',        # комиссионер
-    'доверитель',          # доверитель
-    'поверенный',          # поверенный
-    'хранитель',          # хранитель
-    'поклажедатель',      # поклажедатель
-    'перевозчик',          # перевозчик
-    'отправитель',        # отправитель
-    'получатель',         # получатель
-    'страховщик',          # страховщик
-    'страхователь',       # страхователь
-    'выгодоприобретатель',  # выгодоприобретатель
-    'агент',               # агент
-    'гарант',              # гарант
-    'плательщик',          # плательщик
-    'нотариус',           # нотариус
-    'регистратор',        # регистратор
-    'депозитарий',        # депозитарий
-    'акционер',          # акционер
-    'участник',           # участник
-    'учредитель',         # учредитель
-    'директор',           # директор
-    'президент',          # президент
-    'председатель',       # председатель
-    'секретарь',          # секретарь
-    'бухгалтер',          # бухгалтер
-    'юрист',               # юрист
-    'адвокат',            # адвокат
-    'представитель',       # представитель
-    'сторона',             # сторона
-    'стороны',            # стороны
-    'общество',            # общество
-    'организация',         # организация
-    'предприятие',         # предприятие
-    'банк',                # банк
+# Single words that should NEVER be FIO (checked per-word for multi-word spans)
+_FIO_WORD_BLOCKLIST = frozenset({
+    'аудитор', 'бенефициар', 'принципал', 'продавец', 'покупатель',
+    'займодавец', 'заёмщик', 'заемщик', 'залогодатель', 'залогодержатель',
+    'поручитель', 'должник', 'кредитор', 'цедент', 'цессионарий',
+    'лицензиар', 'лицензиат', 'арендодатель', 'арендатор',
+    'исполнитель', 'заказчик', 'подрядчик', 'субподрядчик',
+    'комитент', 'комиссионер', 'доверитель', 'поверенный',
+    'хранитель', 'поклажедатель', 'перевозчик', 'отправитель',
+    'страховщик', 'страхователь', 'выгодоприобретатель',
+    'агент', 'гарант', 'плательщик', 'нотариус', 'регистратор',
+    'депозитарий', 'акционер', 'участник', 'учредитель',
+    'директор', 'президент', 'председатель', 'секретарь',
+    'бухгалтер', 'юрист', 'адвокат', 'представитель',
+    'сторона', 'стороны', 'доля', 'акция', 'вкладчик',
+    'трассант', 'трассат', 'общество', 'организация', 'предприятие',
+})
+
+# Words/phrases that should NEVER be YUL (public bodies, sections, legal terms)
+_YUL_WORD_BLOCKLIST = frozenset({
+    # Public registries and bodies
+    'егрюл', 'егрип', 'загс', 'фнс', 'фас', 'цб', 'цбр', 'мвд', 'фсб',
+    'гибдд', 'фссп', 'роспотребнадзор', 'росреестр', 'роспатент',
+    # Courts
+    'суд', 'трибунал', 'арбитраж',
+    # Legal role words (same as FIO blocklist — NER sometimes tags ORG instead)
+    'продавец', 'покупатель', 'цедент', 'цессионарий', 'принципал',
+    'агент', 'поручитель', 'залогодатель', 'залогодержатель',
+    'займодавец', 'заемщик', 'арендодатель', 'арендатор',
+    'страховщик', 'страхователь', 'выгодоприобретатель', 'бенефициар',
+    # Document structure words
+    'стороны', 'сторон', 'споры', 'спор', 'участник', 'участников',
+    'уставном', 'капитале', 'уставный', 'капитал',
+    'условия', 'положения', 'обязательства', 'обязательство',
+    'права', 'право', 'раздел', 'пункт',
+    # Other common false-positives
+    'бюро', 'агентство', 'служба', 'управление', 'департамент',
+    'министерство', 'комитет', 'палата', 'инспекция',
 })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OPF patterns
-# Captures ONLY the inner name between quotes; OPF prefix stays in text.
-# Result: "ООО «НОВЫЕ ВЫСТАВКИ»"  →  "ООО «[YUL_1]»"
+# OPF patterns (full Russian Wikipedia list)
+# Captures ONLY the inner name; OPF prefix/suffix stays in text.
+# Result: "ООО «Новые Выставки»"  →  "ООО «[YUL_1]»"
 # ─────────────────────────────────────────────────────────────────────────────
 
 _OPF_FULL = (
-    r'(?:общест\w+\s+с\s+ограниченной\s+ответственност\w+|'
+    r'(?:'
+    # ── Коммерческие общества и товарищества ─────────────────────────────────
+    r'общест\w+\s+с\s+ограниченной\s+ответственност\w+|'
+    r'общест\w+\s+с\s+дополнительной\s+ответственност\w+|'
     r'публичн\w+\s+акционерн\w+\s+общест\w+|'
     r'непубличн\w+\s+акционерн\w+\s+общест\w+|'
     r'закрыт\w+\s+акционерн\w+\s+общест\w+|'
     r'открыт\w+\s+акционерн\w+\s+общест\w+|'
     r'акционерн\w+\s+общест\w+|'
-    r'государственн\w+\s+унитарн\w+\s+предприяти\w+|'
-    r'муниципальн\w+\s+унитарн\w+\s+предприяти\w+|'
-    r'федеральн\w+\s+государственн\w+\s+унитарн\w+\s+предприяти\w+|'
-    r'федеральн\w+\s+государственн\w+\s+бюджетн\w+\s+учрежден\w+|'
-    r'автономн\w+\s+некоммерческ\w+\s+организаци\w+|'
-    r'некоммерческ\w+\s+партнерств\w+|'
+    r'полн\w+\s+товариществ\w+|'
+    r'товариществ\w+\s+на\s+вер\w+|'
+    r'крестьянск\w+\s+(?:фермерск\w+\s+)?хозяйств\w+|'
+    r'хозяйственн\w+\s+партнерств\w+|'
     r'производственн\w+\s+кооператив\w+|'
     r'потребительск\w+\s+кооператив\w+|'
-    r'коммерческ\w+\s+банк\w+|'
+    r'инвестиционн\w+\s+товариществ\w+|'
+    r'простое\s+товариществ\w+|'
     r'индивидуальн\w+\s+предпринимател\w+|'
-    r'товариществ\w+\s+собственников\s+жил\w+|'
-    r'садов\w+\s+некоммерческ\w+\s+товариществ\w+|'
-    r'огородническ\w+\s+некоммерческ\w+\s+товариществ\w+'
+    # ── Унитарные предприятия ─────────────────────────────────────────────────
+    r'федеральн\w+\s+государственн\w+\s+унитарн\w+\s+предприяти\w+|'
+    r'государственн\w+\s+(?:областн\w+\s+|унитарн\w+\s+)?унитарн\w+\s+предприяти\w+|'
+    r'муниципальн\w+\s+унитарн\w+\s+предприяти\w+|'
+    # ── Некоммерческие организации ────────────────────────────────────────────
+    r'автономн\w+\s+некоммерческ\w+\s+организаци\w+|'
+    r'некоммерческ\w+\s+партнерств\w+|'
+    r'общественн\w+\s+организаци\w+|'
+    r'общественн\w+\s+объединени\w+|'
+    r'общественн\w+\s+движени\w+|'
+    r'государственн\w+\s+корпораци\w+|'
+    r'политическ\w+\s+парти\w+|'
+    r'профессиональн\w+\s+союз\w+|'
+    r'(?:благотворительн\w+\s+)?фонд\s|'
+    r'ассоциаци\w+(?:\s+и\s+союз\w+)?|'
+    r'объединени\w+\s+юридических\s+лиц|'
+    r'казачь\w+\s+общест\w+|'
+    r'территориальн\w+\s+общественн\w+\s+самоуправлени\w+|'
+    # ── Товарищества собственников / СНТ ────────────────────────────────────
+    r'товариществ\w+\s+собственников\s+(?:недвижимост\w+|жиль\w+)|'
+    r'садовод\w+\s+некоммерческ\w+\s+товариществ\w+|'
+    r'огородническ\w+\s+некоммерческ\w+\s+товариществ\w+|'
+    r'дачн\w+\s+некоммерческ\w+\s+товариществ\w+|'
+    # ── Учреждения (государственные, муниципальные, образовательные) ─────────
+    r'федеральн\w+\s+государственн\w+\s+автономн\w+\s+'
+        r'(?:образовательн\w+\s+)?учрежден\w+|'
+    r'федеральн\w+\s+государственн\w+\s+бюджетн\w+\s+'
+        r'(?:научн\w+\s+|образовательн\w+\s+)?учрежден\w+|'
+    r'федеральн\w+\s+государственн\w+\s+казенн\w+\s+учрежден\w+|'
+    r'федеральн\w+\s+государственн\w+\s+учрежден\w+|'
+    r'федеральн\w+\s+казенн\w+\s+учрежден\w+|'
+    r'государственн\w+\s+(?:областн\w+\s+|бюджетн\w+\s+)?учрежден\w+|'
+    r'муниципальн\w+\s+(?:бюджетн\w+\s+)?(?:казенн\w+\s+)?'
+        r'(?:общеобразовательн\w+\s+|дошкольн\w+\s+)?учрежден\w+|'
+    r'государственн\w+\s+(?:бюджетн\w+\s+)?учрежден\w+\s+'
+        r'(?:культур\w+|здравоохранени\w+|образовани\w+)|'
+    # ── Коммерческий банк ─────────────────────────────────────────────────────
+    r'коммерческ\w+\s+банк\w+'
     r')'
 )
 
 _OPF_SHORT = (
-    r'(?:ООО|ПАО|НАО|ЗАО|ОАО|АО|ГУП|МУП|ФГУП|ФГБУ|ФГАОУ|'
-    r'АНО|НП|НКО|КБ|ИП|ТСЖ|СНТ|ОНТ|ПК|ПотК)'
+    r'(?:ООО|ПАО|НАО|ЗАО|ОАО|АО|ОДО|'
+    r'ПТ|ТНВ|КТ|КФХ|ХП|ПК|ПотК|'
+    r'ГУП|МУП|ФГУП|'
+    r'АНО|НП|НКО|ГК|КБ|ИП|'
+    r'ТСЖ|СНТ|ОНТ|ДНТ|'
+    r'ФГУ|ФГАУ|ФГБУ|ФГКУ|ФКУ|'
+    r'ГБУ|ГКУ|ОГУ|МКУ|ФГАОУ)'
 )
 
 _OPF_PFX = (
@@ -226,35 +242,53 @@ _OPF_PFX = (
     r'\s+(?:(?:' + _OPF_FULL + r'|' + _OPF_SHORT + r')\s+)?'
 )
 
-# Angle-bracket outer «»: inner may contain straight " but NOT closing »
+# Prefix forms: OPF «name» or OPF "name"  (most common in Russian docs)
 _OPF_RE_ANGLE = _p(
-    r'(' + _OPF_PFX + r'«)'          # group 1: OPF + «
-    r'([^»\n]{2,80})'                  # group 2: inner name
-    r'(»)'                             # group 3: closing »
+    r'(' + _OPF_PFX + r'«)'
+    r'([^»\n]{2,80})'
+    r'(»)'
 )
-# Straight/curly outer " ": inner may contain «» but NOT closing "
 _OPF_RE_STRAIGHT = _p(
-    r'(' + _OPF_PFX + r'[“"])'        # group 1: OPF + " or "
-    r'([^”"\n]{2,80})'                 # group 2: inner name
-    r'([”"])'                          # group 3: closing " or "
+    r'(' + _OPF_PFX + r'[""])'
+    r'([^""\n]{2,80})'
+    r'([""])'
+)
+
+# Suffix forms: «name» (OPF) or "name" (OPF) — OPF in parentheses after name
+_OPF_SUFFIX_SHORT = r'(?:' + _OPF_SHORT + r')'
+_OPF_RE_ANGLE_SFX = _p(
+    r'«([^»\n]{2,80})»'
+    r'\s*\(' + _OPF_SUFFIX_SHORT + r'\)'
+)
+_OPF_RE_STRAIGHT_SFX = _p(
+    r'[""]([^""\n]{2,80})[""]'
+    r'\s*\(' + _OPF_SUFFIX_SHORT + r'\)'
 )
 
 
 def _apply_opf_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
     """
-    Find OPF + «Name» patterns (both angle and straight quotes).
-    Replace only the inner name with a token; OPF prefix stays in text.
-    Returns (new_text, {inner_name: [YUL_N]}).
+    Find OPF+«name» (prefix form) and «name»+(OPF) (suffix form).
+    Replace only the inner name with [YUL_N]; OPF stays in text.
     """
     from core.db import get_or_create_token
 
     all_matches = []
+    # Prefix patterns: groups are (prefix, inner, suffix_char) → inner = group 2
     for pattern in (_OPF_RE_ANGLE, _OPF_RE_STRAIGHT):
         for m in pattern.finditer(text):
-            inner_s = m.group(2).strip()
-            if len(inner_s) < 2 or _is_bracketed_token(inner_s):
+            inner = m.group(2).strip()
+            if len(inner) < 2 or _is_bracketed_token(inner):
                 continue
-            all_matches.append((m.start(2), m.end(2), inner_s))
+            all_matches.append((m.start(2), m.end(2), inner))
+
+    # Suffix patterns: group 1 = inner name
+    for pattern in (_OPF_RE_ANGLE_SFX, _OPF_RE_STRAIGHT_SFX):
+        for m in pattern.finditer(text):
+            inner = m.group(1).strip()
+            if len(inner) < 2 or _is_bracketed_token(inner):
+                continue
+            all_matches.append((m.start(1), m.end(1), inner))
 
     if not all_matches:
         return text, {}
@@ -283,7 +317,7 @@ def _apply_opf_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Regex patterns for structured entities
+# Structured regex patterns
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NUM = r'(?:№|No\.?|N)\s*'
@@ -293,7 +327,7 @@ _MONTHS_RU = (
     r'июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)'
 )
 
-_ADR_KEYWORDS = (
+_ADR_KW = (
     r'(?:адрес(?:у|е)?'
     r'|(?:проживает|зарегистрирован(?:а)?)\s+по\s+адресу)'
     r'\s*[:\-]?\s*'
@@ -352,37 +386,21 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
     ('EMAIL', [
         (_p(r'\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b'), 1),
     ]),
-    # АДРЕС — three patterns each requiring a substantive address component:
-    #   1. starts with 6-digit postcode
-    #   2. starts with city keyword
-    #   3. street type + house number
+    # АДРЕС — three specific patterns, each requires a key address element
     ('АДРЕС', [
-        # Pattern A: postcode present (most reliable signal)
-        (_p(
-            _ADR_KEYWORDS +
-            r'(\d{6}[,\s]+[\w\s\.,\-/]{10,300})'
-        ), 1),
-        # Pattern B: city keyword present (optional RF/Russian Federation prefix)
-        (_p(
-            _ADR_KEYWORDS +
+        # A: 6-digit postcode (most reliable signal)
+        (_p(_ADR_KW + r'(\d{6}[,\s]+[\w\s\.,\-/]{10,300})'), 1),
+        # B: city keyword
+        (_p(_ADR_KW +
             r'((?:(?:Р(?:оссийская\s+)?Федерация|РФ)[,\s]+)?'
             r'г(?:ород)?\.?\s+[\w\-]{2,30}[,\s]+'
-            r'[\w\s\.,\-/]{5,300})'
-        ), 1),
-        # Pattern C: street type + house number (definitive address signal)
-        (_p(
-            _ADR_KEYWORDS +
-            r'((?:ул(?:ица)?'
-            r'|пр(?:оспект)?'
-            r'|пер(?:еулок)?'
-            r'|бул(?:ьвар)?'
-            r'|наб(?:ережная)?'
-            r'|ш(?:оссе)?'
-            r'|пл(?:ощадь)?)\.?\s+'
-            r'[\w\s\.\-]{2,50}[,\s]+'
-            r'д(?:ом)?\.?\s*[\w/]+'
-            r'[\w\s\.,\-/]{0,100})'
-        ), 1),
+            r'[\w\s\.,\-/]{5,300})'), 1),
+        # C: street type + house number
+        (_p(_ADR_KW +
+            r'((?:ул(?:ица)?|пр(?:оспект)?|пер(?:еулок)?|бул(?:ьвар)?'
+            r'|наб(?:ережная)?|ш(?:оссе)?|пл(?:ощадь)?)\.?\s+'
+            r'[\w\s\.\-]{2,50}[,\s]+д(?:ом)?\.?\s*[\w/]+'
+            r'[\w\s\.,\-/]{0,100})'), 1),
     ]),
     ('SWIFT', [
         (_p(r'SWIFT\s*[-:]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
@@ -396,11 +414,10 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
 
 
 def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
-    """Run all regex patterns, replace matched values with tokens, return (new_text, reps)."""
     from core.db import get_or_create_token
 
-    matches = []  # (start, end, value, entity_type)
-    used    = []  # (start, end)
+    matches = []
+    used    = []
 
     for entity_type, patterns in REGEX_PATTERNS:
         for pat, grp in patterns:
@@ -420,7 +437,6 @@ def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str,
 
                 if not value:
                     continue
-                # Minimum length for address captures to filter noise
                 if entity_type == 'АДРЕС' and len(value) < 10:
                     continue
                 if any(not (e <= us or s >= ue) for us, ue in used):
@@ -513,9 +529,9 @@ def retry_ner_loading():
 
 def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
     """
-    Run Natasha NER on text that already has [TOKEN] placeholders.
-    Skip spans that overlap with existing tokens or are in the FIO blocklist.
-    Returns (new_text, additional_replacements).
+    Run Natasha NER. Skip spans overlapping existing tokens or matching blocklists.
+    FIO check: any word in the span that's in _FIO_WORD_BLOCKLIST → skip.
+    YUL check: same with _YUL_WORD_BLOCKLIST.
     """
     if not _ner_ready:
         return text, {}
@@ -535,7 +551,7 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
     token_spans = [(m.start(), m.end()) for m in TOKEN_INNER_RE.finditer(text)]
 
     replacements = {}
-    skipped_blocklist = 0
+    skipped = 0
     for span in doc.spans:
         if span.type not in ('PER', 'ORG'):
             continue
@@ -550,9 +566,20 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 
         etype = 'ФИО' if span.type == 'PER' else 'ЮЛ'
 
-        # Skip known legal roles / job titles
-        if etype == 'ФИО' and original.lower().rstrip('.') in _FIO_BLOCKLIST:
-            skipped_blocklist += 1
+        # Blocklist check — per-word for multi-word spans
+        words = {w.lower().rstrip('.,;:)(!?') for w in original.split()}
+        if etype == 'ФИО' and (words & _FIO_WORD_BLOCKLIST):
+            skipped += 1
+            continue
+        if etype == 'ЮЛ' and (words & _YUL_WORD_BLOCKLIST):
+            skipped += 1
+            continue
+        # Also exact phrase match
+        if etype == 'ФИО' and original.lower().rstrip('.,') in _FIO_WORD_BLOCKLIST:
+            skipped += 1
+            continue
+        if etype == 'ЮЛ' and original.lower().rstrip('.,') in _YUL_WORD_BLOCKLIST:
+            skipped += 1
             continue
 
         try:
@@ -565,9 +592,9 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
             token = _wrap(get_or_create_token(db_path, session_id, canon, etype))
             replacements[original] = token
 
-    if replacements or skipped_blocklist:
+    if replacements or skipped:
         print(f'[NER] {len(replacements)} new entities'
-              + (f', {skipped_blocklist} blocklist skips' if skipped_blocklist else ''))
+              + (f', {skipped} blocklist skips' if skipped else ''))
 
     if replacements:
         for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
@@ -577,30 +604,27 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public API — sequential pipeline
+# Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
 def anonymize_text_sequential(text: str, db_path, session_id: str,
                                use_llm: bool = False) -> Tuple[str, Dict[str, str]]:
     """
-    Sequential anonymization. Returns (anonymized_text, all_replacements_dict).
-    all_replacements_dict maps original_value -> [TOKEN] for use in DOCX/PDF/XLSX.
+    Passes 1-3 (+ optional LLM pass 4 when use_llm=True).
+    For DOCX/PDF, handlers call this with use_llm=False per paragraph,
+    then run apply_llm_pass once on the full document separately.
     """
     all_reps: Dict[str, str] = {}
 
-    # Pass 1: OPF org names (regex, preserves OPF prefix in text)
     text, reps1 = _apply_opf_replacements(text, db_path, session_id)
     all_reps.update(reps1)
 
-    # Pass 2: Structured regex (INN, OGRN, phone, etc.)
     text, reps2 = _apply_regex_replacements(text, db_path, session_id)
     all_reps.update(reps2)
 
-    # Pass 3: NER on already-anonymized text
     text, reps3 = _apply_ner_replacements(text, db_path, session_id)
     all_reps.update(reps3)
 
-    # Pass 4: LLM (optional)
     if use_llm:
         try:
             from core.llm import apply_llm_pass
@@ -613,7 +637,7 @@ def anonymize_text_sequential(text: str, db_path, session_id: str,
 
 
 def apply_reverse(text: str, reverse_map: dict) -> str:
-    """Replace [TOKEN] back to original values. Also handles bare TOKEN for backward compat."""
+    """Replace [TOKEN] → original. Also handles bare TOKEN for backward compat."""
     if not reverse_map:
         return text
     combined = {}

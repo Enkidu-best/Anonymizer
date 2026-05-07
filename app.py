@@ -13,6 +13,8 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
+APP_VERSION = "1.2.0"
+
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
 # ── Path resolution (works both in development and PyInstaller bundle) ────────
@@ -52,7 +54,9 @@ def index():
 @app.route('/api/status')
 def status():
     from core.anonymizer import get_ner_status
-    return jsonify(get_ner_status())
+    s = get_ner_status()
+    s['version'] = APP_VERSION
+    return jsonify(s)
 
 
 @app.route('/api/debug')
@@ -106,6 +110,15 @@ def ner_retry():
 def llm_status():
     from core.llm import check_ollama
     return jsonify(check_ollama())
+
+
+@app.route('/api/llm-start', methods=['POST'])
+def llm_start():
+    from core.llm import try_start_ollama, check_ollama
+    ok = try_start_ollama()
+    if ok:
+        return jsonify(check_ollama())
+    return jsonify({'available': False, 'models': [], 'model': None, 'error': 'Ollama не найден или не удалось запустить'}), 200
 
 
 @app.route('/api/llm-model', methods=['POST'])
