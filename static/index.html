@@ -211,6 +211,7 @@ tr:hover td{background:var(--card2)}
 .t-TEL,.t-EMAIL{background:rgba(251,146,60,.12);color:#fb923c}
 .t-PASSPORT,.t-SNILS,.t-ДАТАРОЖД{background:rgba(167,139,250,.12);color:#a78bfa}
 .t-SWIFT{background:rgba(56,189,248,.12);color:#38bdf8}
+.t-АДРЕС{background:rgba(20,184,166,.12);color:#2dd4bf}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
 
 /* ── TOAST ── */
@@ -256,6 +257,7 @@ tr:hover td{background:var(--card2)}
     <span class="logo-icon">🔐</span>
     <span>Anonymizer</span>
     <span class="logo-sub">ФЗ-152, локальная обработка</span>
+    <span id="appVersion" style="font-size:11px;color:var(--text3);margin-left:4px;font-weight:400"></span>
   </div>
   <div class="spacer"></div>
 
@@ -306,12 +308,16 @@ tr:hover td{background:var(--card2)}
       <div class="llm-panel hidden" id="llmPanel">
         <span class="llm-panel-label">Ollama LLM</span>
         <label class="llm-toggle">
-          <input type="checkbox" id="llmEnabled" onchange="onLlmToggle()">
+          <input type="checkbox" id="llmEnabled" checked onchange="onLlmToggle()">
           Включить для этой обработки
         </label>
         <select class="llm-select" id="llmModelSelect" onchange="onLlmModelChange()">
           <option value="">— выбрать модель —</option>
         </select>
+        <button id="llmStartBtn" class="hidden" onclick="startOllama()"
+          style="padding:4px 10px;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.4);border-radius:6px;color:#a78bfa;font-size:12px;cursor:pointer;font-family:var(--font)">
+          ▶ Запустить Ollama
+        </button>
         <span class="llm-info" id="llmInfo">Ollama не обнаружен</span>
       </div>
 
@@ -362,6 +368,7 @@ tr:hover td{background:var(--card2)}
               <option value="TEL">Телефон</option><option value="EMAIL">Email</option>
               <option value="PASSPORT">Паспорт</option><option value="SNILS">СНИЛС</option>
               <option value="SWIFT">SWIFT</option>
+              <option value="ADR">Адрес</option><option value="DOB">Дата рождения</option>
             </select>
           </div>
           <div class="tbl-wrap">
@@ -417,6 +424,7 @@ async function pollNer() {
   try {
     const d = await apiFetch('/api/status');
     const dot = $('nerDot'), txt = $('nerText');
+    if (d.version) $('appVersion').textContent = 'v' + d.version;
     if (d.ready) {
       dot.className = 'ner-dot ready';
       txt.textContent = 'NER готов';
@@ -450,6 +458,7 @@ async function checkLlm() {
     if (d.available) {
       dot.className = 'llm-dot ready';
       badge.textContent = 'LLM';
+      $('llmStartBtn').classList.add('hidden');
       // Populate model list
       sel.innerHTML = '<option value="">— выбрать модель —</option>' +
         d.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
@@ -462,9 +471,31 @@ async function checkLlm() {
     } else {
       dot.className = 'llm-dot';
       badge.textContent = 'LLM';
+      $('llmStartBtn').classList.remove('hidden');
       info.innerHTML = 'Ollama не запущен. <a href="https://ollama.com" target="_blank" style="color:#a78bfa">Установить</a> → <code>ollama pull mistral-nemo</code>';
     }
   } catch { /* ignore */ }
+}
+
+async function startOllama() {
+  const btn = $('llmStartBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Запуск…';
+  try {
+    const d = await apiFetch('/api/llm-start', {method: 'POST'});
+    if (d.available) {
+      toast('Ollama запущен', 'ok');
+      checkLlm();
+    } else {
+      toast(d.error || 'Ollama не удалось запустить', 'err');
+      btn.disabled = false;
+      btn.textContent = '▶ Запустить Ollama';
+    }
+  } catch(ex) {
+    toast('Ошибка: ' + ex.message, 'err');
+    btn.disabled = false;
+    btn.textContent = '▶ Запустить Ollama';
+  }
 }
 
 function onLlmToggle() { /* state read at process time */ }
@@ -693,7 +724,7 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function fmtDate(dt){if(!dt)return'—';try{return new Date(dt).toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'});}catch{return dt;}}
 function fmtSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB';}
 function fileIcon(n){const e=n.split('.').pop().toLowerCase();return{txt:'📄',docx:'📝',pdf:'📕',xlsx:'📊',rtf:'📋'}[e]||'📄';}
-const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT'};
+const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.'};
 function tokenLabel(p){return TL[p]||p;}
 function toast(msg,type='info'){const c=document.getElementById('toasts');const el=document.createElement('div');el.className='toast '+type;el.innerHTML=`<span>${{ok:'✅',err:'❌',info:'ℹ️'}[type]}</span><span>${esc(msg)}</span>`;c.appendChild(el);setTimeout(()=>el.remove(),4500);}
 

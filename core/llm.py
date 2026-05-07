@@ -66,6 +66,68 @@ def set_model(model: str):
     _llm_model = model
 
 
+def try_start_ollama() -> bool:
+    """
+    Try to start the Ollama daemon if it is not running.
+    Works on Windows, macOS, and Linux.
+    Returns True if Ollama becomes available after the attempt.
+    """
+    import subprocess
+    import platform
+    import time
+    import os
+
+    system = platform.system()
+    creationflags = 0
+    if system == 'Windows':
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+
+    def _spawn(*args):
+        try:
+            subprocess.Popen(
+                list(args),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
+    started = False
+    if system == 'Windows':
+        local_app = os.environ.get('LOCALAPPDATA', '')
+        candidates = [
+            os.path.join(local_app, 'Programs', 'Ollama', 'ollama.exe'),
+            r'C:\Program Files\Ollama\ollama.exe',
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                started = _spawn(path, 'serve')
+                break
+        if not started:
+            started = _spawn('ollama', 'serve')
+
+    elif system == 'Darwin':
+        # Try GUI app first (it starts the server automatically)
+        if not _spawn('open', '-a', 'Ollama'):
+            started = _spawn('ollama', 'serve')
+        else:
+            started = True
+
+    else:  # Linux / other
+        started = _spawn('ollama', 'serve')
+
+    if started:
+        print('[LLM] Ollama start command sent, waiting 3 s...')
+        time.sleep(3)
+        result = check_ollama()
+        print(f'[LLM] Ollama available: {result.get("available")}')
+        return result.get('available', False)
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entity extraction via LLM
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,7 +160,7 @@ def _ollama_generate(prompt: str, model: str) -> str:
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
     return data.get('response', '')
 
@@ -148,3 +210,44 @@ def extract_entities_llm(text: str, existing_spans: List[Tuple[int, int]]) -> li
             existing_spans.append((s, e))
 
     return all_entities
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API called from anonymizer.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_llm_pass(text: str, db_path, session_id: str):
+    """
+    Run LLM entity extraction as final anonymization pass.
+    Returns (anonymized_text, replacements_dict).
+    Called from anonymize_text_sequential() when use_llm=True.
+    """
+    from core.anonymizer import TOKEN_INNER_RE, _is_bracketed_token, _wrap
+    from core.db import get_or_create_token
+
+    if not _llm_available:
+        print('[LLM] Ollama not available — skipping LLM pass')
+        return text, {}
+
+    model = _llm_model or DEFAULT_MODEL
+    print(f'[LLM] Starting LLM pass, model={model}')
+
+    existing_spans = [(m.start(), m.end()) for m in TOKEN_INNER_RE.finditer(text)]
+    entities = extract_entities_llm(text, existing_spans)
+
+    if not entities:
+        print('[LLM] No additional entities found')
+        return text, {}
+
+    replacements = {}
+    for ent in entities:
+        if ent.original not in replacements and not _is_bracketed_token(ent.original):
+            token = _wrap(get_or_create_token(db_path, session_id, ent.canonical, ent.entity_type))
+            replacements[ent.original] = token
+            print(f'[LLM] Entity: {repr(ent.original[:60])} → {token}')
+
+    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
+        text = text.replace(orig, tok)
+
+    print(f'[LLM] Pass complete — {len(replacements)} new entities')
+    return text, replacements
