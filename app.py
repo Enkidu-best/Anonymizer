@@ -112,6 +112,12 @@ def llm_status():
     return jsonify(check_ollama())
 
 
+@app.route('/api/llm-progress')
+def llm_progress():
+    from core.llm import get_llm_progress
+    return jsonify(get_llm_progress())
+
+
 @app.route('/api/llm-start', methods=['POST'])
 def llm_start():
     from core.llm import try_start_ollama, check_ollama

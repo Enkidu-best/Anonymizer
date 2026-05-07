@@ -446,7 +446,8 @@ let llmPanelVisible = false;
 
 function toggleLlmPanel() {
   llmPanelVisible = !llmPanelVisible;
-  $('llmPanel').classList.toggle('hidden', !llmPanelVisible);
+  // Only show if in anonymize mode
+  $('llmPanel').classList.toggle('hidden', !llmPanelVisible || S.mode !== 'anonymize');
 }
 
 async function checkLlm() {
@@ -591,6 +592,8 @@ function setMode(m){
   $('mAnon').className='mode-btn'+(m==='anonymize'?' active':'');
   $('mDean').className='mode-btn'+(m==='deanonymize'?' active':'');
   $('modeDesc').textContent=DESCS[m];
+  // LLM only makes sense for anonymization
+  $('llmPanel').classList.toggle('hidden', m !== 'anonymize' || !llmPanelVisible);
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
@@ -643,6 +646,20 @@ function sicoFor(s){return s==='ok'?'✅':s==='err'?'❌':s==='loading'?'⏳':''
 function updateProcBtn(){$('procBtn').disabled=!S.files.filter(x=>x.status===null).length||!S.active;}
 
 // ─── Process ──────────────────────────────────────────────────────────────────
+let _llmPollTimer = null;
+
+async function pollLlmProgress() {
+  try {
+    const d = await apiFetch('/api/llm-progress');
+    if (d.active) {
+      const msg = d.total > 0
+        ? `LLM: фрагмент ${d.chunk} из ${d.total}…`
+        : 'LLM: анализ…';
+      $('procTxt').textContent = msg;
+    }
+  } catch { /* ignore — server might be busy */ }
+}
+
 async function doProcess(){
   const pending=S.files.filter(x=>x.status===null);
   if(!pending.length||!S.active)return;
@@ -653,7 +670,15 @@ async function doProcess(){
   $('procIco').outerHTML='<div class="spinner" id="procIco"></div>';
   $('procTxt').textContent='Обработка…';
 
-  const useLlm = $('llmEnabled').checked && !!$('llmModelSelect').value;
+  // LLM only for anonymization; also requires a model to be selected
+  const useLlm = S.mode === 'anonymize'
+    && $('llmEnabled').checked
+    && !!$('llmModelSelect').value;
+
+  // Poll LLM progress every 2 s while the request is in flight
+  if (useLlm) {
+    _llmPollTimer = setInterval(pollLlmProgress, 2000);
+  }
 
   const fd=new FormData();
   fd.append('mode',S.mode);
@@ -678,6 +703,7 @@ async function doProcess(){
     toast('Ошибка: '+ex.message,'err');
     S.files.forEach(x=>{if(x.status==='loading')x.status=null;});
   }finally{
+    if (_llmPollTimer) { clearInterval(_llmPollTimer); _llmPollTimer = null; }
     renderFileList();updateProcBtn();
     const ico=document.getElementById('procIco');
     if(ico)ico.outerHTML='<span id="procIco">⚡</span>';

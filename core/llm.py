@@ -24,6 +24,12 @@ _llm_checked = False
 _llm_available = False
 _available_models: List[str] = []
 
+# ── Progress state (polled by /api/llm-progress) ──────────────────────────────
+_llm_progress = {'active': False, 'chunk': 0, 'total': 0, 'found': 0}
+
+def get_llm_progress() -> dict:
+    return dict(_llm_progress)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Status
@@ -220,7 +226,8 @@ def apply_llm_pass(text: str, db_path, session_id: str):
     """
     Run LLM entity extraction as final anonymization pass.
     Returns (anonymized_text, replacements_dict).
-    Called from anonymize_text_sequential() when use_llm=True.
+    Called once per document from handlers (NOT per paragraph).
+    Progress is tracked in _llm_progress for the /api/llm-progress endpoint.
     """
     from core.anonymizer import TOKEN_INNER_RE, _is_bracketed_token, _wrap
     from core.db import get_or_create_token
@@ -232,8 +239,49 @@ def apply_llm_pass(text: str, db_path, session_id: str):
     model = _llm_model or DEFAULT_MODEL
     print(f'[LLM] Starting LLM pass, model={model}')
 
+    # Larger chunks = fewer API calls = faster processing
+    CHUNK = 4000
+    chunks = [text[i:i+CHUNK] for i in range(0, len(text), CHUNK)]
+
+    _llm_progress.update({'active': True, 'chunk': 0, 'total': len(chunks), 'found': 0})
+
     existing_spans = [(m.start(), m.end()) for m in TOKEN_INNER_RE.finditer(text)]
-    entities = extract_entities_llm(text, existing_spans)
+    entities = []
+
+    for i, chunk in enumerate(chunks, 1):
+        _llm_progress['chunk'] = i
+        print(f'[LLM] Chunk {i}/{len(chunks)}…')
+
+        # Skip chunks that are already almost entirely tokenized (>80% tokens)
+        token_chars = sum(len(m.group()) for m in TOKEN_INNER_RE.finditer(chunk))
+        if len(chunk) > 0 and token_chars / len(chunk) > 0.80:
+            print(f'[LLM] Chunk {i} mostly tokenized, skipping')
+            continue
+
+        try:
+            raw = _ollama_generate(chunk, model)
+            raw = re.sub(r'```(?:json)?|```', '', raw).strip()
+            data = json.loads(raw)
+        except Exception as ex:
+            print(f'[LLM] Chunk {i} parse error: {ex}')
+            continue
+
+        for item in data.get('entities', []):
+            ent_text = item.get('text', '').strip()
+            ent_type = item.get('type', 'ФИО')
+            if not ent_text or len(ent_text) < 2:
+                continue
+            idx = text.find(ent_text)
+            if idx == -1:
+                continue
+            s, e = idx, idx + len(ent_text)
+            if any(not (e <= us or s >= ue) for us, ue in existing_spans):
+                continue
+            from core.anonymizer import Entity
+            entities.append(Entity(ent_text, ent_text, ent_type, s, e))
+            existing_spans.append((s, e))
+
+    _llm_progress.update({'active': False, 'found': len(entities)})
 
     if not entities:
         print('[LLM] No additional entities found')
