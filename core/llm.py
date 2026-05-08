@@ -138,6 +138,8 @@ def try_start_ollama() -> bool:
 # Entity extraction via LLM
 # ─────────────────────────────────────────────────────────────────────────────
 
+# System prompt for combined Regex+NER+LLM mode: LLM supplements regex, skips
+# structured numbers that regex already handles reliably.
 _SYSTEM = (
     'Ты — система анонимизации персональных данных. '
     'Твоя задача — найти в юридическом тексте персональные данные и реквизиты, '
@@ -150,14 +152,45 @@ _SYSTEM = (
     '{"entities": [{"text": "<точный текст из документа>", "type": "ФИО|ЮЛ|АДРЕС|ДАТАРОЖД|ПАСПОРТ"}]}'
 )
 
+# Full-scan system prompt for LLM-only mode: must find ALL sensitive entity types
+# since regex/NER passes are skipped.
+_SYSTEM_FULL = (
+    'Ты — система анонимизации персональных данных. '
+    'Найди В ТЕКСТЕ ВСЕ персональные данные и конфиденциальные реквизиты: '
+    'ФИО физических лиц (включая все падежи и сокращённые формы И.О. Фамилия), '
+    'названия организаций (ООО, АО, ПАО, ИП и т.д.), '
+    'ИНН (10 или 12 цифр), ОГРН (13 или 15 цифр), КПП (9 цифр), '
+    'расчётные счета (20 цифр, начинаются на 4), '
+    'корреспондентские счета (20 цифр, начинаются на 301), '
+    'БИК (9 цифр), СНИЛС (формат XXX-XXX-XXX XX), '
+    'номера телефонов, адреса электронной почты, '
+    'паспортные данные (серия и номер), '
+    'адреса регистрации/проживания, даты рождения. '
+    'Верни ТОЛЬКО JSON без пояснений и без markdown: '
+    '{"entities": [{"text": "<точный текст из документа>", '
+    '"type": "ФИО|ЮЛ|ИНН|ОГРН|КПП|РС|КС|БИК|СНИЛС|ПАСПОРТ|ТЕЛЕФОН|EMAIL|АДРЕС|ДАТАРОЖД"}]}'
+)
 
-def _ollama_generate(prompt: str, model: str) -> str:
+# Review prompt: LLM validates the regex candidate list against the document text
+_SYSTEM_REVIEW = (
+    'Ты — эксперт по анонимизации персональных данных в юридических документах. '
+    'Тебе дан текст документа и предварительный список найденных сущностей. '
+    'Проверь каждую сущность: убери ошибочные (например, г.о. Щелково — это не ФИО), '
+    'исправь значения если они неверны, добавь пропущенные персональные данные. '
+    'Верни ТОЛЬКО JSON без пояснений: '
+    '{"entities": [{"text": "<точный текст из документа>", '
+    '"type": "ФИО|ЮЛ|ИНН|ОГРН|КПП|РС|КС|БИК|СНИЛС|ПАСПОРТ|ТЕЛЕФОН|EMAIL|АДРЕС|ДАТАРОЖД", '
+    '"action": "keep|remove|fix"}]}'
+)
+
+
+def _ollama_generate(prompt: str, model: str, system: str = None) -> str:
     body = json.dumps({
         'model':  model,
         'prompt': prompt,
-        'system': _SYSTEM,
+        'system': system if system is not None else _SYSTEM,
         'stream': False,
-        'options': {'temperature': 0.0, 'num_predict': 800},
+        'options': {'temperature': 0.0, 'num_predict': 1200},
     }).encode()
 
     req = urllib.request.Request(
@@ -222,9 +255,17 @@ def extract_entities_llm(text: str, existing_spans: List[Tuple[int, int]]) -> li
 # Public API called from anonymizer.py
 # ─────────────────────────────────────────────────────────────────────────────
 
-def apply_llm_pass(text: str, db_path, session_id: str):
+def apply_llm_pass(text: str, db_path, session_id: str,
+                   full_scan: bool = False):
     """
     Run LLM entity extraction as final anonymization pass.
+
+    full_scan=True  — LLM-only mode: use _SYSTEM_FULL prompt that covers ALL
+                      entity types (INN, OGRN, accounts, phones, etc.) since
+                      regex/NER passes are skipped.
+    full_scan=False — Combined mode: use _SYSTEM prompt that supplements regex,
+                      skipping structured numbers already handled reliably.
+
     Returns (anonymized_text, replacements_dict).
     Called once per document from handlers (NOT per paragraph).
     Progress is tracked in _llm_progress for the /api/llm-progress endpoint.
@@ -237,7 +278,8 @@ def apply_llm_pass(text: str, db_path, session_id: str):
         return text, {}
 
     model = _llm_model or DEFAULT_MODEL
-    print(f'[LLM] Starting LLM pass, model={model}')
+    system_prompt = _SYSTEM_FULL if full_scan else _SYSTEM
+    print(f'[LLM] Starting LLM pass, model={model}, full_scan={full_scan}')
 
     # Larger chunks = fewer API calls = faster processing
     CHUNK = 4000
@@ -259,7 +301,7 @@ def apply_llm_pass(text: str, db_path, session_id: str):
             continue
 
         try:
-            raw = _ollama_generate(chunk, model)
+            raw = _ollama_generate(chunk, model, system=system_prompt)
             raw = re.sub(r'```(?:json)?|```', '', raw).strip()
             data = json.loads(raw)
         except Exception as ex:
@@ -299,3 +341,114 @@ def apply_llm_pass(text: str, db_path, session_id: str):
 
     print(f'[LLM] Pass complete — {len(replacements)} new entities')
     return text, replacements
+
+
+def llm_review_candidates(original_text: str, candidates: list,
+                           db_path, session_id: str) -> dict:
+    """
+    In combined mode: ask LLM to validate the regex candidate list against
+    the original document text. LLM can mark each candidate as keep/remove/fix.
+
+    candidates — list of dicts: [{'text': str, 'type': str}, ...]
+
+    Returns replacements dict of validated entities that were kept or fixed.
+    """
+    from core.anonymizer import _is_bracketed_token, _wrap
+    from core.db import get_or_create_token
+
+    if not _llm_available or not candidates:
+        return {}
+
+    model = _llm_model or DEFAULT_MODEL
+
+    # Build a concise candidate list for the prompt
+    cand_json = json.dumps(
+        [{'text': c['text'], 'type': c['type']} for c in candidates],
+        ensure_ascii=False
+    )
+
+    # Keep original text context manageable — use first 3000 chars as context
+    ctx = original_text[:3000]
+
+    prompt = (
+        f'ТЕКСТ ДОКУМЕНТА (фрагмент):\n{ctx}\n\n'
+        f'КАНДИДАТЫ НА АНОНИМИЗАЦИЮ:\n{cand_json}\n\n'
+        'Проверь каждый кандидат. Для каждого укажи action: '
+        '"keep" — верный, "remove" — ошибочный (например, г.о. — не ФИО), '
+        '"fix" — исправь значение в поле text.'
+    )
+
+    try:
+        raw = _ollama_generate(prompt, model, system=_SYSTEM_REVIEW)
+        raw = re.sub(r'```(?:json)?|```', '', raw).strip()
+        data = json.loads(raw)
+    except Exception as ex:
+        print(f'[LLM Review] Parse error: {ex}')
+        return {}
+
+    replacements = {}
+    for item in data.get('entities', []):
+        action   = item.get('action', 'keep')
+        ent_text = item.get('text', '').strip()
+        ent_type = item.get('type', 'ФИО')
+
+        if action == 'remove' or not ent_text:
+            print(f'[LLM Review] Removed: {repr(ent_text)}')
+            continue
+
+        if _is_bracketed_token(ent_text):
+            continue
+
+        token = _wrap(get_or_create_token(db_path, session_id, ent_text, ent_type))
+        replacements[ent_text] = token
+        print(f'[LLM Review] {action}: {repr(ent_text[:60])} → {token}')
+
+    return replacements
+
+
+def llm_parse_user_request(user_message: str, session_id: str,
+                            db_path, existing_mappings: list) -> dict:
+    """
+    Parse a free-form user request to add/modify/delete a DB mapping.
+    Returns dict with action details or {'error': str} if LLM can't understand.
+
+    user_message — e.g. "Добавь иностранную компанию Daimler AG как организацию"
+                        "Удали FIO_3" / "Исправь INN_1 на 7707083893"
+
+    Returns one of:
+      {'action': 'add',    'text': str, 'type': str}
+      {'action': 'delete', 'token': str}
+      {'action': 'update', 'token': str, 'canonical_form': str}
+      {'error': str}
+    """
+    if not _llm_available:
+        return {'error': 'Ollama недоступен'}
+
+    model = _llm_model or DEFAULT_MODEL
+
+    # Show existing tokens as context
+    ctx_lines = [f'{m["token"]} = {m["canonical_form"]} ({m["entity_type"]})'
+                 for m in (existing_mappings or [])[:30]]
+    ctx = '\n'.join(ctx_lines) if ctx_lines else '(маппинг пуст)'
+
+    system = (
+        'Ты — помощник системы анонимизации. Пользователь описывает действие с базой маппингов. '
+        'Распознай намерение и верни ТОЛЬКО JSON без пояснений: '
+        '{"action": "add|delete|update", "text": "...", "type": "ФИО|ЮЛ|ИНН|...", '
+        '"token": "FIO_1", "canonical_form": "..."} '
+        'Поля заполняй только те, что нужны для данного action. '
+        'Если не можешь понять запрос — верни {"error": "не понял запрос"}.'
+    )
+
+    prompt = (
+        f'СУЩЕСТВУЮЩИЙ МАППИНГ:\n{ctx}\n\n'
+        f'ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {user_message}'
+    )
+
+    try:
+        raw = _ollama_generate(prompt, model, system=system)
+        raw = re.sub(r'```(?:json)?|```', '', raw).strip()
+        return json.loads(raw)
+    except Exception as ex:
+        print(f'[LLM User] Parse error: {ex}')
+        return {'error': f'Ошибка разбора ответа LLM: {ex}'}

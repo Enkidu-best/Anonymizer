@@ -118,6 +118,33 @@ def get_or_create_token(db_path, session_id: str,
     return token
 
 
+def delete_mapping(db_path, session_id: str, token: str):
+    """Remove a single mapping by token from a session."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            'DELETE FROM mappings WHERE session_id=? AND token=?',
+            (session_id, token)
+        )
+
+
+def update_mapping(db_path, session_id: str, token: str, data: dict):
+    """
+    Update canonical_form and/or entity_type for an existing mapping.
+    data may contain 'canonical_form' and/or 'entity_type'.
+    """
+    with get_conn(db_path) as conn:
+        if data.get('canonical_form'):
+            conn.execute(
+                'UPDATE mappings SET canonical_form=? WHERE session_id=? AND token=?',
+                (data['canonical_form'], session_id, token)
+            )
+        if data.get('entity_type'):
+            conn.execute(
+                'UPDATE mappings SET entity_type=? WHERE session_id=? AND token=?',
+                (data['entity_type'], session_id, token)
+            )
+
+
 def get_reverse_mappings(db_path, session_id: str) -> dict:
     """Return {token: canonical_form} for deanonymization."""
     with get_conn(db_path) as conn:
