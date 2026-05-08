@@ -169,17 +169,30 @@ def _replace_para(para, replacements: dict):
         for r in runs[1:]:
             r.text = ''
 
-    # Pass 3: hyperlinks — email/URL stored as w:hyperlink rather than plain w:r
+    # Pass 3: hyperlinks — email/URL stored as w:hyperlink rather than plain w:r.
     # para.runs does NOT include runs inside w:hyperlink elements, so we walk the XML.
+    # After replacing the display text we UNWRAP the w:hyperlink element: move its
+    # child w:r runs up to the parent so the link target (r:id / href) is removed.
+    # This prevents the clickable link from still pointing to the original email/URL.
     try:
         from docx.oxml.ns import qn
-        for hl in para._p.iter(qn('w:hyperlink')):
+        for hl in list(para._p.iter(qn('w:hyperlink'))):
+            hl_modified = False
             for run_el in hl.iter(qn('w:r')):
                 for t_el in run_el.iter(qn('w:t')):
                     if t_el.text:
                         for old, new in sorted_reps:
                             if old in t_el.text:
                                 t_el.text = t_el.text.replace(old, new)
+                                hl_modified = True
+            if hl_modified:
+                parent = hl.getparent()
+                if parent is not None:
+                    idx = list(parent).index(hl)
+                    for child in list(hl):
+                        parent.insert(idx, child)
+                        idx += 1
+                    parent.remove(hl)
     except Exception:
         pass
 
@@ -232,12 +245,15 @@ def _anon_docx(input_path, output_path, session_id, db_path,
                 _replace_para(para, reps)
                 total_reps.update(reps)
 
-    # Pass 4 (LLM) — single call on full document text to avoid N×timeout hangs
+    # Pass 4 (LLM) — single call on full document text to avoid N×timeout hangs.
+    # full_scan=True when regex/NER was skipped (LLM-only mode) so LLM covers
+    # all entity types including INN/OGRN/accounts/phones/etc.
     if use_llm:
         try:
             from core.llm import apply_llm_pass
             combined = '\n'.join(p.text for p in all_paras if p.text.strip())
-            _, llm_reps = apply_llm_pass(combined, db_path, session_id)
+            _, llm_reps = apply_llm_pass(combined, db_path, session_id,
+                                          full_scan=not use_regex_ner)
             if llm_reps:
                 for para in all_paras:
                     if para.text.strip():
@@ -348,7 +364,8 @@ def _anon_pdf(input_path, output_path, session_id, db_path,
             try:
                 from core.llm import apply_llm_pass
                 combined = '\n'.join(p.text for p in all_paras if p.text.strip())
-                _, llm_reps = apply_llm_pass(combined, db_path, session_id)
+                _, llm_reps = apply_llm_pass(combined, db_path, session_id,
+                                              full_scan=not use_regex_ner)
                 if llm_reps:
                     for para in all_paras:
                         if para.text.strip():
