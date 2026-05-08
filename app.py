@@ -13,7 +13,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
