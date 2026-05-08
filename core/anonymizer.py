@@ -283,7 +283,7 @@ _OPF_RE_ANGLE = _p(
 )
 _OPF_RE_STRAIGHT = _p(
     r'(' + _OPF_PFX + r'[""])'
-    r'([^""\n]{2,60}(?:[""][^""\n]{1,60})?)'
+    r'([^""\n]{2,60}(?:[""][А-ЯЁа-яёA-Za-z0-9\s\-\.«»]{1,30})?)'
     r'([""])'
 )
 
@@ -376,7 +376,7 @@ _MONTHS_RU = (
 
 _ADR_KW = (
     r'(?:адрес(?:у|е)?'
-    r'|(?:проживает|зарегистрирован(?:а)?)\s+по\s+адресу'
+    r'|(?:проживает|зарегистрирован\w*)\s+по\s+адресу'
     r'|местонахождени[яею]?'
     r'|место\s+(?:нахождени[яею]?|жительств\w+|регистраци\w+)'
     r'|(?:юридическ|фактическ|почтов)\w+\s+адрес\w*'
@@ -406,6 +406,9 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'(?:р(?:асч)?\.?\s*/\s*с(?:ч(?:[ёе]т)?)?\b|расч[ёе]тн\w*\s+сч[ёе]т\w*)'
             r'\s*[:=]?\s*' + _NUM + r'?(\d{20})\b'
         ), 1),
+        # Fallback: standalone 20-digit settlement account (label may be in different cell)
+        # Settlement accounts always start with 4[012]
+        (_p(r'(?<!\d)(4[012]\d{18})(?!\d)'), 1),
     ]),
     ('КС', [
         (_p(
@@ -413,6 +416,8 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'корр?\.\s*сч[ёе]т\w*|корреспондентск\w+\s+сч[ёе]т\w*)'
             r'\s*[:=]?\s*' + _NUM + r'?(\d{20})\b'
         ), 1),
+        # Fallback: standalone 20-digit correspondent account (always starts with 301)
+        (_p(r'(?<!\d)(30[1-9]\d{17})(?!\d)'), 1),
     ]),
     ('БИК', [
         (_p(r'БИК\s*[:=]?\s*(\d{9})\b'), 1),
@@ -422,7 +427,7 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
         (_p(r'СНИЛС\s*[:=]?\s*(\d{11})\b'), 1),
     ]),
     ('ПАСПОРТ', [
-        (_p(r'паспорт\w*\s+(?:сери[яи]\s+)?(\d{2}\s*\d{2})\s*,?\s*(?:' + _NUM + r')?(\d{6})\b'), 0),
+        (_p(r'паспорт\w*[\s:;]+(?:сери[яи]\s+)?(\d{2}\s*\d{2})\s*,?\s*(?:' + _NUM + r')?(\d{6})\b'), 0),
         (_p(r'сери[яи]\s+(\d{2}\s+\d{2})[,;\s]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
         (_p(r'сери[яи]\s+(\d{2,4})\s+(?:' + _NUM + r')(\d{6,9})\b'), 0),
     ]),
@@ -441,7 +446,7 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
     ('АДРЕС', [
         # A: keyword + 6-digit postcode
         (_p(_ADR_KW + r'(\d{6}[,\s]+[\wА-ЯЁа-яё\s\.,\-/№«»"]{10,350})'), 1),
-        # B: keyword + city name
+        # B: keyword + city name (г. City, ...)
         (_p(_ADR_KW +
             r'((?:(?:Р(?:оссийская\s+)?Федерация|РФ)[,\s]+)?'
             r'г(?:ород)?\.?\s+[\w\-]{2,30}[,\s]+'
@@ -462,6 +467,14 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'[,\s][\wА-ЯЁа-яёA-Za-z\s,\.\-/№«»"]{15,350}?)'
             r'(?=\s*[\n\r]|\s*$)'
         ), 1),
+        # E: keyword + region/oblast/krai + city + rest (address with region first)
+        # Matches: "зарегистрированная по адресу: Ростовская область, г. Ростов-на-Дону, ..."
+        # Uses [^\n] so the match stops at the line boundary (doesn't eat following text).
+        (_p(_ADR_KW +
+            r'([А-ЯЁа-яё][А-ЯЁа-яё\w ]{1,30}'
+            r'(?:область|край|республика|округ)[а-яё]*'
+            r'[,\s]+'
+            r'[^\n]{10,300})'), 1),
     ]),
     ('SWIFT', [
         (_p(r'SWIFT\s*[-:]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
@@ -498,10 +511,13 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'\s*/'
         ), 1),
         # D — initials first: И.О. Фамилия  (e.g. "С.В. Сердитов", "А.Р. Чуйко")
-        (_p(
-            r'(?<![А-ЯЁа-яё.])'
+        # IMPORTANT: compiled WITHOUT re.IGNORECASE so that г.о./т.ч. (lowercase)
+        # cannot satisfy the [А-ЯЁ] uppercase character class.
+        (re.compile(
+            r'(?<![А-ЯЁа-яёA-Za-z.])'
             r'([А-ЯЁ]\.\s*[А-ЯЁ]\.\s+[А-ЯЁ][а-яё]{2,25})'
-            r'(?![А-ЯЁа-яё])'
+            r'(?![А-ЯЁа-яё])',
+            re.UNICODE
         ), 1),
     ]),
     ('ДАТАРОЖД', [
@@ -533,14 +549,35 @@ _FIO_VERB_END_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
+# Common Russian role/title/position word endings that appear before initials
+# but are NOT surnames.  E.g. "Директор А.Б." → Директор ends in "-тор".
+# This prevents Pattern B (Surname I.O.) from matching "Директор А.Б." as FIO.
+_FIO_NON_SURNAME_END_RE = re.compile(
+    r'(?:тор|тель|ник|щик|ист|мен|нт|ент|нер|гер|ор|ер|ль|ик|ек|ок|ач|ич)\s*$',
+    re.UNICODE,   # case-sensitive — matches only lowercase endings (role words are
+)                 # never all-caps), leaves uppercase surnames like "ИВАНОВ" unaffected
+
 # Trailing punctuation to strip from captured FIO values
 _FIO_TRAIL_RE = re.compile(r'[\s.,;:!?)»"\'—\-]+$', re.UNICODE)
 
 
 def _validate_fio_regex(text: str) -> bool:
-    """Return False if the first word of a FIO match looks like a Russian verb."""
+    """
+    Return False if the first word of a FIO match looks like a Russian verb or
+    a common role/title/position word (not a surname).
+    """
     words = text.split()
-    return not bool(words and _FIO_VERB_END_RE.search(words[0]))
+    if not words:
+        return False
+    first = words[0]
+    # Reject verb-ending first word
+    if _FIO_VERB_END_RE.search(first):
+        return False
+    # Reject role/title word ending (e.g. Директор, Менеджер, Начальник, ...)
+    # Only apply when the match has format "Word I.O." (exactly 2 tokens: word + initials)
+    if len(words) == 2 and _FIO_NON_SURNAME_END_RE.search(first):
+        return False
+    return True
 
 
 def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
@@ -772,7 +809,10 @@ def anonymize_text_sequential(text: str, db_path, session_id: str,
     if use_llm:
         try:
             from core.llm import apply_llm_pass
-            text, reps4 = apply_llm_pass(text, db_path, session_id)
+            # full_scan=True when regex/NER skipped (LLM-only mode) so LLM covers
+            # ALL entity types including INN, OGRN, accounts, phones, emails, etc.
+            text, reps4 = apply_llm_pass(text, db_path, session_id,
+                                          full_scan=not use_regex_ner)
             all_reps.update(reps4)
         except Exception as ex:
             print(f'[LLM] Pass failed: {ex}')
