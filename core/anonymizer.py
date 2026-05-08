@@ -106,7 +106,7 @@ def _p(pattern):
 
 TOKEN_INNER_RE = re.compile(
     r'\[(?:FIO|YUL|INN|OGRN|KPP|RS|KS|BIK|SNILS|PASSPORT|TEL|EMAIL|SWIFT|ADR|DOB'
-    r'|ДАТАРОЖД)_\d+\]'
+    r'|ДАТАРОЖД|LIC|URL)_\d+\]'
 )
 
 def _wrap(token: str) -> str:
@@ -274,10 +274,11 @@ _OPF_PFX = (
 )
 
 # Prefix forms: OPF «name» or OPF "name"  (most common in Russian docs)
-# Inner group allows ONE nested quote so  ООО "МЗ "Ревякино"  →  МЗ "Ревякино
+# Angle quotes: «x never contains », so [^»\n]+ already handles inner «sub» names.
+# Straight quotes: inner group allows ONE nested quote for  ООО "МЗ "Ревякино"  →  МЗ "Ревякино
 _OPF_RE_ANGLE = _p(
     r'(' + _OPF_PFX + r'«)'
-    r'([^»\n]{2,60}(?:»[^»\n]{1,60})?)'
+    r'([^»\n]{2,80})'
     r'(»)'
 )
 _OPF_RE_STRAIGHT = _p(
@@ -295,6 +296,13 @@ _OPF_RE_ANGLE_SFX = _p(
 _OPF_RE_STRAIGHT_SFX = _p(
     r'[""]([^""\n]{2,80})[""]'
     r'\s*\(' + _OPF_SUFFIX_SHORT + r'\)'
+)
+
+# Inner OPF form: «ООО Name» — OPF abbreviation is INSIDE the angle quotes.
+# Replaces only the Name (group 2), keeping the OPF visible: «ООО [YUL_N]».
+_OPF_RE_INNER_ANGLE = _p(
+    r'«(' + _OPF_SHORT + r')\s+'
+    r'([А-ЯЁа-яёA-Za-z\d][А-ЯЁа-яё\w\-\s"]{1,60}?)»'
 )
 
 
@@ -321,6 +329,13 @@ def _apply_opf_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
             if len(inner) < 2 or _is_bracketed_token(inner):
                 continue
             all_matches.append((m.start(1), m.end(1), inner))
+
+    # Inner OPF: «ООО Name» — OPF inside the quotes; replace only Name (group 2)
+    for m in _OPF_RE_INNER_ANGLE.finditer(text):
+        inner = m.group(2).strip()
+        if len(inner) < 2 or _is_bracketed_token(inner):
+            continue
+        all_matches.append((m.start(2), m.end(2), inner))
 
     if not all_matches:
         return text, {}
@@ -361,7 +376,11 @@ _MONTHS_RU = (
 
 _ADR_KW = (
     r'(?:адрес(?:у|е)?'
-    r'|(?:проживает|зарегистрирован(?:а)?)\s+по\s+адресу)'
+    r'|(?:проживает|зарегистрирован(?:а)?)\s+по\s+адресу'
+    r'|местонахождени[яею]?'
+    r'|место\s+(?:нахождени[яею]?|жительств\w+|регистраци\w+)'
+    r'|(?:юридическ|фактическ|почтов)\w+\s+адрес\w*'
+    r'|(?:место\s+)?регистраци[иейю]\w*\s+(?:по\s+)?адрес\w*)'
     r'\s*[:\-]?\s*'
 )
 
@@ -403,9 +422,9 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
         (_p(r'СНИЛС\s*[:=]?\s*(\d{11})\b'), 1),
     ]),
     ('ПАСПОРТ', [
-        (_p(r'паспорт\w*\s+(?:серии?\s+)?(\d{2}\s*\d{2})\s*,?\s*(?:' + _NUM + r')?(\d{6})\b'), 0),
-        (_p(r'серии?\s+(\d{2}\s+\d{2})[,;\s]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
-        (_p(r'серии?\s+(\d{2,4})\s+(?:' + _NUM + r')(\d{6,9})\b'), 0),
+        (_p(r'паспорт\w*\s+(?:сери[яи]\s+)?(\d{2}\s*\d{2})\s*,?\s*(?:' + _NUM + r')?(\d{6})\b'), 0),
+        (_p(r'сери[яи]\s+(\d{2}\s+\d{2})[,;\s]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
+        (_p(r'сери[яи]\s+(\d{2,4})\s+(?:' + _NUM + r')(\d{6,9})\b'), 0),
     ]),
     ('ТЕЛЕФОН', [
         (_p(r'(?:тел[ефон.:\s]*\.?|моб\.?\s*[:\s]|факс\s*[:\s])\s*'
@@ -418,21 +437,31 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
     ('EMAIL', [
         (_p(r'\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b'), 1),
     ]),
-    # АДРЕС — three specific patterns, each requires a key address element
+    # АДРЕС — patterns, each requires a keyword or strong positional anchor
     ('АДРЕС', [
-        # A: 6-digit postcode (most reliable signal)
-        (_p(_ADR_KW + r'(\d{6}[,\s]+[\w\s\.,\-/]{10,300})'), 1),
-        # B: city keyword
+        # A: keyword + 6-digit postcode
+        (_p(_ADR_KW + r'(\d{6}[,\s]+[\wА-ЯЁа-яё\s\.,\-/№«»"]{10,350})'), 1),
+        # B: keyword + city name
         (_p(_ADR_KW +
             r'((?:(?:Р(?:оссийская\s+)?Федерация|РФ)[,\s]+)?'
             r'г(?:ород)?\.?\s+[\w\-]{2,30}[,\s]+'
-            r'[\w\s\.,\-/]{5,300})'), 1),
-        # C: street type + house number
+            r'[\wА-ЯЁа-яё\s\.,\-/№]{5,350})'), 1),
+        # C: keyword + street type + house number
         (_p(_ADR_KW +
             r'((?:ул(?:ица)?|пр(?:оспект)?|пер(?:еулок)?|бул(?:ьвар)?'
             r'|наб(?:ережная)?|ш(?:оссе)?|пл(?:ощадь)?)\.?\s+'
-            r'[\w\s\.\-]{2,50}[,\s]+д(?:ом)?\.?\s*[\w/]+'
-            r'[\w\s\.,\-/]{0,100})'), 1),
+            r'[\wА-ЯЁа-яё\s\.\-]{2,50}[,\s]+д(?:ом)?\.?\s*[\w/]+'
+            r'[\wА-ЯЁа-яё\s\.,\-/№]{0,100})'), 1),
+        # D: standalone 6-digit postcode + city abbreviation (no keyword needed)
+        # Г.МОСКВА / г. Москва / ГОР. ПЕРМЬ — reliably identifies an address block
+        (_p(
+            r'(?<!\d)(\d{6}[,\s]{1,5}'
+            r'(?:[А-ЯЁа-яёA-Za-z\-]{2,30}[.,]?\s+)?'   # optional country/region
+            r'(?:[Гг]\.?\s*|[Гг][Оо][Рр]\.?\s+)'        # г. / ГОР.
+            r'[А-ЯЁа-яё][А-ЯЁа-яё\-]{1,29}'             # city name
+            r'[,\s][\wА-ЯЁа-яёA-Za-z\s,\.\-/№«»"]{15,350}?)'
+            r'(?=\s*[\n\r]|\s*$)'
+        ), 1),
     ]),
     ('SWIFT', [
         (_p(r'SWIFT\s*[-:]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
@@ -452,6 +481,7 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'(?![А-ЯЁа-яё])'
         ), 1),
         # B — Surname + two initials  (Иванов А. А.  or  Иванов А.А.)
+        # Verb-ending filter applied in _apply_regex_replacements for this type.
         (_p(
             r'(?<![А-ЯЁа-яё])'
             r'([А-ЯЁ][а-яё]{2,20}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)'
@@ -467,13 +497,50 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)?)'  # or initials
             r'\s*/'
         ), 1),
+        # D — initials first: И.О. Фамилия  (e.g. "С.В. Сердитов", "А.Р. Чуйко")
+        (_p(
+            r'(?<![А-ЯЁа-яё.])'
+            r'([А-ЯЁ]\.\s*[А-ЯЁ]\.\s+[А-ЯЁ][а-яё]{2,25})'
+            r'(?![А-ЯЁа-яё])'
+        ), 1),
     ]),
     ('ДАТАРОЖД', [
         (_p(r'\b(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\s+(?:года?\s+рожд\w+|рожд\w+)'), 1),
         (_p(r'(?:рожд[ёе]н\w*\s+)(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\b'), 1),
         (_p(r'дата\s+рождени\w+\s*[:\s]\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b'), 1),
     ]),
+    # ЦБ licence numbers  (Лицензия ЦБ РФ № 2721)
+    ('ЛИЦЕНЗИЯ', [
+        (_p(r'лицензи[яию]\w*\s+(?:цб\s+рф|банка\s+росси\w+|центральн\w+\s+банк\w+)'
+            r'\s*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
+        (_p(r'цб\s+рф\s+лицензи[яию]\w*\s*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
+    ]),
+    # Website URLs
+    ('URL', [
+        (_p(r'((?:https?://|www\.)[A-Za-zА-ЯЁа-яё0-9\-\.]+\.[A-Za-z]{2,10}'
+            r'(?:/[^\s,;)»"\'<>\n]{0,200})?)'), 1),
+    ]),
 ]
+
+
+# ── FIO validation helpers ────────────────────────────────────────────────────
+
+# Russian 3rd-person singular present-tense verb endings that look like surnames.
+# E.g. "Возглавляет" ends in "яет" → not a surname.
+_FIO_VERB_END_RE = re.compile(
+    r'(?:ает|яет|ует|вает|зает|жает|щает|тает|нает|'
+    r'ляет|ряет|бает|пает|дает|лает|кает|мает|гает|чает|хает)\s*$',
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Trailing punctuation to strip from captured FIO values
+_FIO_TRAIL_RE = re.compile(r'[\s.,;:!?)»"\'—\-]+$', re.UNICODE)
+
+
+def _validate_fio_regex(text: str) -> bool:
+    """Return False if the first word of a FIO match looks like a Russian verb."""
+    words = text.split()
+    return not bool(words and _FIO_VERB_END_RE.search(words[0]))
 
 
 def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
@@ -502,6 +569,20 @@ def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str,
                     continue
                 if entity_type == 'АДРЕС' and len(value) < 10:
                     continue
+
+                # ФИО-specific validation & cleanup
+                if entity_type == 'ФИО':
+                    # Strip trailing punctuation (e.g. "А.Р. ЧУЙКО)" → "А.Р. ЧУЙКО")
+                    stripped = _FIO_TRAIL_RE.sub('', value)
+                    if stripped != value:
+                        e -= len(value) - len(stripped)
+                        value = stripped
+                    if not value:
+                        continue
+                    # Reject if first word looks like a verb ("Возглавляет С.В.")
+                    if not _validate_fio_regex(value):
+                        continue
+
                 if any(not (e <= us or s >= ue) for us, ue in used):
                     continue
 
@@ -629,6 +710,8 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 
         s, e = span.start, span.stop
         original = span.text.strip()
+        # Strip trailing punctuation that Natasha sometimes includes in a PER span
+        original = _FIO_TRAIL_RE.sub('', original)
 
         if any(not (e <= ts or s >= te) for ts, te in token_spans):
             continue
@@ -666,22 +749,25 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 # ─────────────────────────────────────────────────────────────────────────────
 
 def anonymize_text_sequential(text: str, db_path, session_id: str,
-                               use_llm: bool = False) -> Tuple[str, Dict[str, str]]:
+                               use_llm: bool = False,
+                               use_regex_ner: bool = True) -> Tuple[str, Dict[str, str]]:
     """
     Passes 1-3 (+ optional LLM pass 4 when use_llm=True).
-    For DOCX/PDF, handlers call this with use_llm=False per paragraph,
+    Set use_regex_ner=False to skip passes 1-3 and run only LLM (for comparison).
+    For DOCX/PDF, handlers call this per paragraph with use_llm=False,
     then run apply_llm_pass once on the full document separately.
     """
     all_reps: Dict[str, str] = {}
 
-    text, reps1 = _apply_opf_replacements(text, db_path, session_id)
-    all_reps.update(reps1)
+    if use_regex_ner:
+        text, reps1 = _apply_opf_replacements(text, db_path, session_id)
+        all_reps.update(reps1)
 
-    text, reps2 = _apply_regex_replacements(text, db_path, session_id)
-    all_reps.update(reps2)
+        text, reps2 = _apply_regex_replacements(text, db_path, session_id)
+        all_reps.update(reps2)
 
-    text, reps3 = _apply_ner_replacements(text, db_path, session_id)
-    all_reps.update(reps3)
+        text, reps3 = _apply_ner_replacements(text, db_path, session_id)
+        all_reps.update(reps3)
 
     if use_llm:
         try:

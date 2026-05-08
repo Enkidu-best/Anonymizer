@@ -211,7 +211,9 @@ tr:hover td{background:var(--card2)}
 .t-TEL,.t-EMAIL{background:rgba(251,146,60,.12);color:#fb923c}
 .t-PASSPORT,.t-SNILS,.t-ДАТАРОЖД{background:rgba(167,139,250,.12);color:#a78bfa}
 .t-SWIFT{background:rgba(56,189,248,.12);color:#38bdf8}
-.t-АДРЕС{background:rgba(20,184,166,.12);color:#2dd4bf}
+.t-АДРЕС,.t-ADR{background:rgba(20,184,166,.12);color:#2dd4bf}
+.t-LIC{background:rgba(239,68,68,.12);color:#f87171}
+.t-URL{background:rgba(14,165,233,.12);color:#38bdf8}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
 
 /* ── TOAST ── */
@@ -321,6 +323,16 @@ tr:hover td{background:var(--card2)}
         <span class="llm-info" id="llmInfo">Ollama не обнаружен</span>
       </div>
 
+      <!-- REGEX+NER TOGGLE (anonymize mode only) -->
+      <div id="regexNerRow" style="margin-bottom:10px;display:flex;align-items:center;gap:8px">
+        <label class="llm-toggle" style="font-size:12px;color:var(--text2)">
+          <input type="checkbox" id="regexNerEnabled" checked>
+          <span title="Регулярные выражения + Natasha NER. Снимите галку, чтобы оставить только LLM (для сравнения).">
+            Регулярки&nbsp;+ NER
+          </span>
+        </label>
+      </div>
+
       <!-- DROP ZONE -->
       <div class="drop-zone" id="dropZone"
            onclick="document.getElementById('fInput').click()"
@@ -369,6 +381,7 @@ tr:hover td{background:var(--card2)}
               <option value="PASSPORT">Паспорт</option><option value="SNILS">СНИЛС</option>
               <option value="SWIFT">SWIFT</option>
               <option value="ADR">Адрес</option><option value="DOB">Дата рождения</option>
+              <option value="LIC">Лицензия ЦБ</option><option value="URL">URL / Сайт</option>
             </select>
           </div>
           <div class="tbl-wrap">
@@ -592,8 +605,10 @@ function setMode(m){
   $('mAnon').className='mode-btn'+(m==='anonymize'?' active':'');
   $('mDean').className='mode-btn'+(m==='deanonymize'?' active':'');
   $('modeDesc').textContent=DESCS[m];
-  // LLM only makes sense for anonymization
-  $('llmPanel').classList.toggle('hidden', m !== 'anonymize' || !llmPanelVisible);
+  // LLM and Regex+NER controls only make sense for anonymization
+  const isAnon = m === 'anonymize';
+  $('llmPanel').classList.toggle('hidden', !isAnon || !llmPanelVisible);
+  $('regexNerRow').style.display = isAnon ? 'flex' : 'none';
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
@@ -675,6 +690,9 @@ async function doProcess(){
     && $('llmEnabled').checked
     && !!$('llmModelSelect').value;
 
+  // Regex+NER only for anonymization (always true for deanon)
+  const useRegexNer = S.mode !== 'anonymize' || $('regexNerEnabled').checked;
+
   // Poll LLM progress every 2 s while the request is in flight
   if (useLlm) {
     _llmPollTimer = setInterval(pollLlmProgress, 2000);
@@ -684,6 +702,7 @@ async function doProcess(){
   fd.append('mode',S.mode);
   fd.append('session_id',S.active.id);
   fd.append('use_llm', useLlm ? 'true' : 'false');
+  fd.append('use_regex_ner', useRegexNer ? 'true' : 'false');
   pending.forEach(x=>fd.append('files',x.file));
 
   try{
@@ -750,7 +769,7 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function fmtDate(dt){if(!dt)return'—';try{return new Date(dt).toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'});}catch{return dt;}}
 function fmtSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB';}
 function fileIcon(n){const e=n.split('.').pop().toLowerCase();return{txt:'📄',docx:'📝',pdf:'📕',xlsx:'📊',rtf:'📋'}[e]||'📄';}
-const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.'};
+const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.',LIC:'Лицензия ЦБ',URL:'URL'};
 function tokenLabel(p){return TL[p]||p;}
 function toast(msg,type='info'){const c=document.getElementById('toasts');const el=document.createElement('div');el.className='toast '+type;el.innerHTML=`<span>${{ok:'✅',err:'❌',info:'ℹ️'}[type]}</span><span>${esc(msg)}</span>`;c.appendChild(el);setTimeout(()=>el.remove(),4500);}
 
