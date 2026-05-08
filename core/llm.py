@@ -184,7 +184,9 @@ _SYSTEM_REVIEW = (
 )
 
 
-def _ollama_generate(prompt: str, model: str, system: str = None) -> str:
+def _ollama_generate(prompt: str, model: str, system: str = None,
+                     timeout: int = 120) -> str:
+    """Call Ollama /api/generate. Default timeout 120 s (configurable)."""
     body = json.dumps({
         'model':  model,
         'prompt': prompt,
@@ -199,7 +201,7 @@ def _ollama_generate(prompt: str, model: str, system: str = None) -> str:
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
     return data.get('response', '')
 
@@ -313,9 +315,19 @@ def apply_llm_pass(text: str, db_path, session_id: str,
             ent_type = item.get('type', 'ФИО')
             if not ent_text or len(ent_text) < 2:
                 continue
+
+            # Try exact match first; fall back to case-insensitive search so the
+            # LLM can return e.g. "ИВАНОВ" when the document has "Иванов".
             idx = text.find(ent_text)
             if idx == -1:
+                lo = text.lower()
+                idx = lo.find(ent_text.lower())
+                if idx != -1:
+                    # Use actual document casing for the replacement key
+                    ent_text = text[idx:idx + len(ent_text)]
+            if idx == -1:
                 continue
+
             s, e = idx, idx + len(ent_text)
             if any(not (e <= us or s >= ue) for us, ue in existing_spans):
                 continue
@@ -379,7 +391,7 @@ def llm_review_candidates(original_text: str, candidates: list,
     )
 
     try:
-        raw = _ollama_generate(prompt, model, system=_SYSTEM_REVIEW)
+        raw = _ollama_generate(prompt, model, system=_SYSTEM_REVIEW, timeout=180)
         raw = re.sub(r'```(?:json)?|```', '', raw).strip()
         data = json.loads(raw)
     except Exception as ex:
@@ -446,7 +458,7 @@ def llm_parse_user_request(user_message: str, session_id: str,
     )
 
     try:
-        raw = _ollama_generate(prompt, model, system=system)
+        raw = _ollama_generate(prompt, model, system=system, timeout=180)
         raw = re.sub(r'```(?:json)?|```', '', raw).strip()
         return json.loads(raw)
     except Exception as ex:
