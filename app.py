@@ -13,7 +13,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
@@ -166,6 +166,92 @@ def delete_session(sid):
 def session_mappings(sid):
     from core.db import get_session_mappings
     return jsonify(get_session_mappings(DB_PATH, sid))
+
+
+@app.route('/api/sessions/<sid>/mappings/<token>', methods=['DELETE'])
+def delete_mapping_route(sid, token):
+    from core.db import delete_mapping
+    delete_mapping(DB_PATH, sid, token)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sessions/<sid>/mappings/<token>', methods=['PATCH'])
+def update_mapping_route(sid, token):
+    from core.db import update_mapping
+    data = request.get_json(force=True, silent=True) or {}
+    update_mapping(DB_PATH, sid, token, data)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sessions/<sid>/mappings', methods=['POST'])
+def add_mapping_route(sid):
+    """Manually add a new mapping (from user text field / LLM parse)."""
+    from core.db import get_or_create_token, get_session_mappings
+    data = request.get_json(force=True, silent=True) or {}
+    canonical = (data.get('canonical_form') or '').strip()
+    entity_type = (data.get('entity_type') or '').strip()
+    if not canonical or not entity_type:
+        return jsonify({'error': 'canonical_form и entity_type обязательны'}), 400
+    token = get_or_create_token(DB_PATH, sid, canonical, entity_type)
+    return jsonify({'token': token, 'canonical_form': canonical, 'entity_type': entity_type}), 201
+
+
+@app.route('/api/sessions/<sid>/llm-request', methods=['POST'])
+def llm_mapping_request(sid):
+    """
+    Parse a free-form user request about DB modifications via LLM.
+    e.g. "Добавь компанию Daimler AG", "Удали FIO_3", "Исправь INN_1 на 7707083893"
+    """
+    from core.llm import llm_parse_user_request
+    from core.db import (get_session_mappings, get_or_create_token,
+                         delete_mapping, update_mapping)
+    data = request.get_json(force=True, silent=True) or {}
+    message = (data.get('message') or '').strip()
+    if not message:
+        return jsonify({'error': 'Сообщение не передано'}), 400
+
+    mappings = get_session_mappings(DB_PATH, sid)
+    result = llm_parse_user_request(message, sid, DB_PATH, mappings)
+
+    if 'error' in result:
+        return jsonify({'ok': False, 'message': result['error']}), 200
+
+    action = result.get('action')
+    try:
+        if action == 'add':
+            canonical = (result.get('text') or result.get('canonical_form') or '').strip()
+            entity_type = (result.get('type') or result.get('entity_type') or 'ЮЛ').strip()
+            if not canonical:
+                return jsonify({'ok': False, 'message': 'LLM не распознал значение'}), 200
+            token = get_or_create_token(DB_PATH, sid, canonical, entity_type)
+            return jsonify({'ok': True, 'action': 'add', 'token': token,
+                            'canonical_form': canonical, 'entity_type': entity_type,
+                            'mappings': get_session_mappings(DB_PATH, sid)})
+
+        elif action == 'delete':
+            token = (result.get('token') or '').strip()
+            if not token:
+                return jsonify({'ok': False, 'message': 'LLM не распознал токен для удаления'}), 200
+            delete_mapping(DB_PATH, sid, token)
+            return jsonify({'ok': True, 'action': 'delete', 'token': token,
+                            'mappings': get_session_mappings(DB_PATH, sid)})
+
+        elif action == 'update':
+            token = (result.get('token') or '').strip()
+            canonical = (result.get('canonical_form') or result.get('text') or '').strip()
+            entity_type = (result.get('type') or result.get('entity_type') or '').strip()
+            if not token:
+                return jsonify({'ok': False, 'message': 'LLM не распознал токен'}), 200
+            update_mapping(DB_PATH, sid, token,
+                           {'canonical_form': canonical, 'entity_type': entity_type})
+            return jsonify({'ok': True, 'action': 'update', 'token': token,
+                            'mappings': get_session_mappings(DB_PATH, sid)})
+
+        else:
+            return jsonify({'ok': False, 'message': f'Неизвестное действие: {action}'}), 200
+
+    except Exception as ex:
+        return jsonify({'ok': False, 'message': str(ex)}), 200
 
 
 # ── Process ───────────────────────────────────────────────────────────────────
