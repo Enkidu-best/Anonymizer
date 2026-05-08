@@ -13,7 +13,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.4.0"
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
@@ -174,9 +174,10 @@ def process():
     from core.handlers import process_uploaded_file
     from core.db       import get_session_mappings
 
-    mode = request.form.get('mode', 'anonymize')
-    sid  = request.form.get('session_id', '').strip()
-    use_llm = request.form.get('use_llm', 'false').lower() == 'true'
+    mode          = request.form.get('mode', 'anonymize')
+    sid           = request.form.get('session_id', '').strip()
+    use_llm       = request.form.get('use_llm',       'false').lower() == 'true'
+    use_regex_ner = request.form.get('use_regex_ner', 'true' ).lower() != 'false'
     if not sid:
         return jsonify({'error': 'session_id не передан'}), 400
 
@@ -204,6 +205,7 @@ def process():
                 db_path=DB_PATH,
                 mode=mode,
                 use_llm=use_llm,
+                use_regex_ner=use_regex_ner,
             )
             # PDF deanon produces .txt — adjust reported filename
             out_name = r['output_filename']
