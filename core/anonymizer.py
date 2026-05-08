@@ -287,15 +287,18 @@ _OPF_RE_STRAIGHT = _p(
     r'([""])'
 )
 
-# Suffix forms: «name» (OPF) or "name" (OPF) — OPF in parentheses after name
+# Suffix forms: «name» (OPF) or "name" (OPF) — OPF in parentheses after name.
+# Matches both short abbreviations (АО, ООО…) and full-form OPF names
+# (акционерное общество, публичное акционерное общество, etc.)
 _OPF_SUFFIX_SHORT = r'(?:' + _OPF_SHORT + r')'
+_OPF_SUFFIX_ANY = r'(?:' + _OPF_SHORT + r'|' + _OPF_FULL + r')'
 _OPF_RE_ANGLE_SFX = _p(
     r'«([^»\n]{2,80})»'
-    r'\s*\(' + _OPF_SUFFIX_SHORT + r'\)'
+    r'\s*\(' + _OPF_SUFFIX_ANY + r'\)'
 )
 _OPF_RE_STRAIGHT_SFX = _p(
     r'[""]([^""\n]{2,80})[""]'
-    r'\s*\(' + _OPF_SUFFIX_SHORT + r'\)'
+    r'\s*\(' + _OPF_SUFFIX_ANY + r'\)'
 )
 
 # Inner OPF form: «ООО Name» — OPF abbreviation is INSIDE the angle quotes.
@@ -380,6 +383,7 @@ _ADR_KW = (
     r'|местонахождени[яею]?'
     r'|место\s+(?:нахождени[яею]?|жительств\w+|регистраци\w+)'
     r'|(?:юридическ|фактическ|почтов)\w+\s+адрес\w*'
+    r'|адрес\s+(?:юридическ|физическ|места\s+нахождени[ея])\w*'
     r'|(?:место\s+)?регистраци[иейю]\w*\s+(?:по\s+)?адрес\w*)'
     r'\s*[:\-]?\s*'
 )
@@ -583,6 +587,11 @@ def _validate_fio_regex(text: str) -> bool:
 def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
     from core.db import get_or_create_token
 
+    # matches: (start, end, canonical_value, entity_type, original_text_in_doc)
+    # canonical_value — stored in DB (groups joined by space, no separators)
+    # original_text_in_doc — actual substring to replace in text
+    #   For grp==0 patterns (e.g. ПАСПОРТ), these differ:
+    #   canonical = "60 17 062138"  but  original = "паспорт серия 60 17№ 062138"
     matches = []
     used    = []
 
@@ -593,11 +602,15 @@ def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str,
                     groups = [g for g in m.groups() if g]
                     if not groups:
                         continue
+                    # Canonical form: groups joined (the actual private values)
                     value = ' '.join(g.strip() for g in groups)
+                    # Original text in the document (includes keyword + separators)
+                    orig_text = m.group(0)
                     s, e  = m.start(), m.end()
                 else:
                     try:
                         value = (m.group(grp) or '').strip()
+                        orig_text = value      # same for grp != 0
                         s, e  = m.start(grp), m.end(grp)
                     except IndexError:
                         continue
@@ -614,16 +627,17 @@ def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str,
                     if stripped != value:
                         e -= len(value) - len(stripped)
                         value = stripped
+                        orig_text = _FIO_TRAIL_RE.sub('', orig_text)
                     if not value:
                         continue
-                    # Reject if first word looks like a verb ("Возглавляет С.В.")
+                    # Reject if first word looks like a verb or role title
                     if not _validate_fio_regex(value):
                         continue
 
                 if any(not (e <= us or s >= ue) for us, ue in used):
                     continue
 
-                matches.append((s, e, value, entity_type))
+                matches.append((s, e, value, entity_type, orig_text))
                 used.append((s, e))
 
     if not matches:
@@ -631,17 +645,17 @@ def _apply_regex_replacements(text: str, db_path, session_id: str) -> Tuple[str,
 
     matches.sort(key=lambda x: x[0])
     replacements = {}
-    for _, _, value, etype in matches:
-        if value not in replacements:
+    for _, _, value, etype, orig_text in matches:
+        if orig_text not in replacements:
             token = _wrap(get_or_create_token(db_path, session_id, value, etype))
-            replacements[value] = token
+            replacements[orig_text] = token
 
     for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
         text = text.replace(orig, tok)
 
     if replacements:
         by_type: Dict[str, int] = {}
-        for _, _, _, etype in matches:
+        for _, _, _, etype, _ in matches:
             by_type[etype] = by_type.get(etype, 0) + 1
         print(f'[REGEX] {len(replacements)} entities: ' +
               ', '.join(f'{k}={v}' for k, v in sorted(by_type.items())))
@@ -785,6 +799,37 @@ def _apply_ner_replacements(text: str, db_path, session_id: str) -> Tuple[str, D
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _apply_known_entities(text: str, db_path, session_id: str) -> Tuple[str, Dict[str, str]]:
+    """
+    Final pass: scan existing DB mappings against the current text and replace
+    any canonical_form values that are still present.  This handles:
+    - Entities manually added to the DB by the user
+    - Entities found in previous documents in the same session
+    Re-running the original file will correctly tokenize everything in the DB.
+    """
+    from core.db import get_session_mappings
+
+    mappings = get_session_mappings(db_path, session_id)
+    if not mappings:
+        return text, {}
+
+    replacements = {}
+    for m in sorted(mappings, key=lambda x: -len(x['canonical_form'])):
+        canonical = m['canonical_form']
+        token = f"[{m['token']}]"
+        if canonical in text and not _is_bracketed_token(canonical):
+            replacements[canonical] = token
+
+    if not replacements:
+        return text, {}
+
+    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
+        text = text.replace(orig, tok)
+
+    print(f'[KNOWN] {len(replacements)} existing entities applied')
+    return text, replacements
+
+
 def anonymize_text_sequential(text: str, db_path, session_id: str,
                                use_llm: bool = False,
                                use_regex_ner: bool = True) -> Tuple[str, Dict[str, str]]:
@@ -816,6 +861,10 @@ def anonymize_text_sequential(text: str, db_path, session_id: str,
             all_reps.update(reps4)
         except Exception as ex:
             print(f'[LLM] Pass failed: {ex}')
+
+    # Final pass: apply known DB entries (handles manual additions + re-runs)
+    text, reps_known = _apply_known_entities(text, db_path, session_id)
+    all_reps.update(reps_known)
 
     return text, all_reps
 
