@@ -70,21 +70,23 @@ def get_session_mappings(db_path, session_id: str):
 
 # Token prefix map  (entity_type → ASCII prefix so tokens are PDF-safe)
 _PREFIX = {
-    'ФИО':     'FIO',
-    'ЮЛ':      'YUL',
-    'ИНН':     'INN',
-    'ОГРН':    'OGRN',
-    'КПП':     'KPP',
-    'РС':      'RS',
-    'КС':      'KS',
-    'БИК':     'BIK',
-    'СНИЛС':   'SNILS',
-    'ПАСПОРТ': 'PASSPORT',
-    'ТЕЛЕФОН': 'TEL',
-    'EMAIL':   'EMAIL',
-    'SWIFT':   'SWIFT',
-    'АДРЕС':   'ADR',
-    'ДАТАРОЖД':'DOB',
+    'ФИО':      'FIO',
+    'ЮЛ':       'YUL',
+    'ИНН':      'INN',
+    'ОГРН':     'OGRN',
+    'КПП':      'KPP',
+    'РС':       'RS',
+    'КС':       'KS',
+    'БИК':      'BIK',
+    'СНИЛС':    'SNILS',
+    'ПАСПОРТ':  'PASSPORT',
+    'ТЕЛЕФОН':  'TEL',
+    'EMAIL':    'EMAIL',
+    'SWIFT':    'SWIFT',
+    'АДРЕС':    'ADR',
+    'ДАТАРОЖД': 'DOB',
+    'ЛИЦЕНЗИЯ': 'LIC',
+    'URL':      'URL',
 }
 
 

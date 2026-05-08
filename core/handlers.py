@@ -42,7 +42,8 @@ def _pdf_has_text_layer(filepath: Path) -> bool:
 
 def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
-                          use_llm: bool = False) -> dict:
+                          use_llm: bool = False,
+                          use_regex_ner: bool = True) -> dict:
     valid, err = validate_file(input_path)
     if not valid:
         raise ValueError(err)
@@ -61,7 +62,8 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
     output_path = output_dir / output_name
 
     if mode == 'anonymize':
-        result = _anonymize(input_path, output_path, ext, session_id, db_path, use_llm)
+        result = _anonymize(input_path, output_path, ext, session_id, db_path,
+                            use_llm, use_regex_ner)
     else:
         result = _deanonymize(input_path, output_path, ext, session_id, db_path)
 
@@ -77,12 +79,13 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
 # Anonymize dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _anonymize(input_path, output_path, ext, session_id, db_path, use_llm=False):
-    if ext == '.txt':  return _anon_txt(input_path, output_path, session_id, db_path, use_llm)
-    if ext == '.docx': return _anon_docx(input_path, output_path, session_id, db_path, use_llm)
-    if ext == '.pdf':  return _anon_pdf(input_path, output_path, session_id, db_path, use_llm)
-    if ext == '.xlsx': return _anon_xlsx(input_path, output_path, session_id, db_path, use_llm)
-    if ext == '.rtf':  return _anon_rtf(input_path, output_path, session_id, db_path, use_llm)
+def _anonymize(input_path, output_path, ext, session_id, db_path,
+               use_llm=False, use_regex_ner=True):
+    if ext == '.txt':  return _anon_txt(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
+    if ext == '.docx': return _anon_docx(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
+    if ext == '.pdf':  return _anon_pdf(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
+    if ext == '.xlsx': return _anon_xlsx(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
+    if ext == '.rtf':  return _anon_rtf(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
     raise ValueError(f'Unsupported: {ext}')
 
 
@@ -166,6 +169,20 @@ def _replace_para(para, replacements: dict):
         for r in runs[1:]:
             r.text = ''
 
+    # Pass 3: hyperlinks — email/URL stored as w:hyperlink rather than plain w:r
+    # para.runs does NOT include runs inside w:hyperlink elements, so we walk the XML.
+    try:
+        from docx.oxml.ns import qn
+        for hl in para._p.iter(qn('w:hyperlink')):
+            for run_el in hl.iter(qn('w:r')):
+                for t_el in run_el.iter(qn('w:t')):
+                    if t_el.text:
+                        for old, new in sorted_reps:
+                            if old in t_el.text:
+                                t_el.text = t_el.text.replace(old, new)
+    except Exception:
+        pass
+
 
 def _iter_all_paras(doc):
     yield from doc.paragraphs
@@ -181,33 +198,39 @@ def _iter_all_paras(doc):
             pass
 
 
-def _anon_txt(input_path, output_path, session_id, db_path, use_llm=False):
+def _anon_txt(input_path, output_path, session_id, db_path,
+              use_llm=False, use_regex_ner=True):
     from core.anonymizer import anonymize_text_sequential
-    text        = input_path.read_text(encoding='utf-8', errors='replace')
-    out, reps   = anonymize_text_sequential(text, db_path, session_id, use_llm)
+    text      = input_path.read_text(encoding='utf-8', errors='replace')
+    out, reps = anonymize_text_sequential(text, db_path, session_id,
+                                          use_llm=use_llm,
+                                          use_regex_ner=use_regex_ner)
     output_path.write_text(out, encoding='utf-8')
     return {'entities_found': len(reps)}
 
 
-def _anon_docx(input_path, output_path, session_id, db_path, use_llm=False):
+def _anon_docx(input_path, output_path, session_id, db_path,
+               use_llm=False, use_regex_ner=True):
     from docx import Document
     from core.anonymizer import anonymize_text_sequential
 
     doc = Document(str(input_path))
     _accept_tracked_changes(doc)
 
-    all_paras = list(_iter_all_paras(doc))
+    all_paras  = list(_iter_all_paras(doc))
     total_reps = {}
 
     # Passes 1-3 (OPF regex, structured regex, NER) — per paragraph so NER sees
     # each paragraph's actual grammatical form (genitive/dative/etc.)
-    for para in all_paras:
-        if not para.text.strip():
-            continue
-        _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm=False)
-        if reps:
-            _replace_para(para, reps)
-            total_reps.update(reps)
+    if use_regex_ner:
+        for para in all_paras:
+            if not para.text.strip():
+                continue
+            _, reps = anonymize_text_sequential(para.text, db_path, session_id,
+                                                use_llm=False, use_regex_ner=True)
+            if reps:
+                _replace_para(para, reps)
+                total_reps.update(reps)
 
     # Pass 4 (LLM) — single call on full document text to avoid N×timeout hangs
     if use_llm:
@@ -282,7 +305,8 @@ def _find_cyrillic_font() -> str | None:
     return next((p for p in candidates if os.path.exists(p)), None)
 
 
-def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
+def _anon_pdf(input_path, output_path, session_id, db_path,
+              use_llm=False, use_regex_ner=True):
     """
     Convert PDF → DOCX via pdf2docx (preserves layout/fonts), then anonymize
     per-paragraph. Output is .docx — much better quality than in-place PDF redaction.
@@ -307,16 +331,18 @@ def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
         # ── Step 2: anonymize the DOCX per-paragraph (LLM at document level) ─
         from docx import Document
         doc = Document(str(tmp_docx))
-        all_paras = list(_iter_all_paras(doc))
+        all_paras  = list(_iter_all_paras(doc))
         total_reps = {}
 
-        for para in all_paras:
-            if not para.text.strip():
-                continue
-            _, reps = anonymize_text_sequential(para.text, db_path, session_id, use_llm=False)
-            if reps:
-                _replace_para(para, reps)
-                total_reps.update(reps)
+        if use_regex_ner:
+            for para in all_paras:
+                if not para.text.strip():
+                    continue
+                _, reps = anonymize_text_sequential(para.text, db_path, session_id,
+                                                    use_llm=False, use_regex_ner=True)
+                if reps:
+                    _replace_para(para, reps)
+                    total_reps.update(reps)
 
         if use_llm:
             try:
@@ -342,7 +368,8 @@ def _anon_pdf(input_path, output_path, session_id, db_path, use_llm=False):
     import fitz
     doc      = fitz.open(str(input_path))
     all_text = '\n'.join(p.get_text() for p in doc)
-    _, reps  = anonymize_text_sequential(all_text, db_path, session_id, use_llm)
+    _, reps  = anonymize_text_sequential(all_text, db_path, session_id,
+                                         use_llm=use_llm, use_regex_ner=use_regex_ner)
 
     if reps:
         sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
@@ -444,7 +471,8 @@ def _deanon_pdf(input_path, output_path, rev):
 # XLSX helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _anon_xlsx(input_path, output_path, session_id, db_path, use_llm=False):
+def _anon_xlsx(input_path, output_path, session_id, db_path,
+               use_llm=False, use_regex_ner=True):
     from openpyxl import load_workbook
     from core.anonymizer import anonymize_text_sequential
 
@@ -454,7 +482,8 @@ def _anon_xlsx(input_path, output_path, session_id, db_path, use_llm=False):
         for row in ws.iter_rows() for cell in row
         if isinstance(cell.value, str) and cell.value.strip()
     )
-    _, reps = anonymize_text_sequential(all_text, db_path, session_id, use_llm)
+    _, reps = anonymize_text_sequential(all_text, db_path, session_id,
+                                        use_llm=use_llm, use_regex_ner=use_regex_ner)
 
     if reps:
         sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
@@ -497,11 +526,13 @@ def _extract_rtf_plain(filepath: Path) -> str:
         return ''
 
 
-def _anon_rtf(input_path, output_path, session_id, db_path, use_llm=False):
+def _anon_rtf(input_path, output_path, session_id, db_path,
+              use_llm=False, use_regex_ner=True):
     from core.anonymizer import anonymize_text_sequential
 
-    plain      = _extract_rtf_plain(input_path)
-    _, reps    = anonymize_text_sequential(plain, db_path, session_id, use_llm)
+    plain   = _extract_rtf_plain(input_path)
+    _, reps = anonymize_text_sequential(plain, db_path, session_id,
+                                        use_llm=use_llm, use_regex_ner=use_regex_ner)
     raw        = input_path.read_bytes().decode('utf-8', errors='replace')
     for orig, tok in sorted(reps.items(), key=lambda x: -len(x[0])):
         raw = raw.replace(orig, tok)
