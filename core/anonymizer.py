@@ -90,11 +90,19 @@ TOKEN_INNER_RE = re.compile(
     r'|ДАТАРОЖД|LIC|URL)_\d+\]'
 )
 
+# Matches a bracketed token anywhere in a string (used to detect partial masks)
+ANY_TOKEN_RE = re.compile(r'\[[A-Z_А-ЯЁ]+_\d+\]')
+
+
 def _wrap(token: str) -> str:
     return f'[{token}]'
 
 def _is_bracketed_token(text: str) -> bool:
     return bool(TOKEN_INNER_RE.fullmatch(text.strip()))
+
+def _contains_token(text: str) -> bool:
+    """True if text contains any [TYPE_N] mask — such matches should be skipped."""
+    return bool(ANY_TOKEN_RE.search(text))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -206,20 +214,20 @@ def _apply_opf_pass(text: str, db_path, session_id: str,
     for pattern in (_OPF_RE_ANGLE, _OPF_RE_STRAIGHT):
         for m in pattern.finditer(text):
             inner = m.group(2).strip()
-            if len(inner) < 2 or _is_bracketed_token(inner):
+            if len(inner) < 2 or _is_bracketed_token(inner) or _contains_token(inner):
                 continue
             all_matches.append((m.start(2), m.end(2), inner))
 
     for pattern in (_OPF_RE_ANGLE_SFX, _OPF_RE_STRAIGHT_SFX):
         for m in pattern.finditer(text):
             inner = m.group(1).strip()
-            if len(inner) < 2 or _is_bracketed_token(inner):
+            if len(inner) < 2 or _is_bracketed_token(inner) or _contains_token(inner):
                 continue
             all_matches.append((m.start(1), m.end(1), inner))
 
     for m in _OPF_RE_INNER_ANGLE.finditer(text):
         inner = m.group(2).strip()
-        if len(inner) < 2 or _is_bracketed_token(inner):
+        if len(inner) < 2 or _is_bracketed_token(inner) or _contains_token(inner):
             continue
         all_matches.append((m.start(2), m.end(2), inner))
 
@@ -459,6 +467,10 @@ def _apply_regex_pass(text: str, db_path, session_id: str,
                 if entity_type == 'АДРЕС' and len(value) < 10:
                     continue
 
+                # Skip if match contains a mask token (already-anonymized content)
+                if _contains_token(value) or _contains_token(orig_text):
+                    continue
+
                 if exclusions and (orig_text, entity_type) in exclusions:
                     continue
 
@@ -523,8 +535,10 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
 
         original = ent.text.strip()
         original = _FIO_TRAIL_RE.sub('', original)
+        # Trim trailing punctuation/brackets/quotes that NER often grabs
+        original = re.sub(r'^[\s«»"\'(\[]+|[\s«»"\'.,;:!?)\]]+$', '', original)
 
-        if re.fullmatch(r'\[[A-Z_]+\d+\]', original):
+        if _is_bracketed_token(original) or _contains_token(original):
             continue
         if len(original) < 3:
             continue

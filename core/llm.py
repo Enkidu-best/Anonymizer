@@ -23,10 +23,16 @@ _llm_checked = False
 _llm_available = False
 _available_models: List[str] = []
 
-_llm_progress = {'active': False, 'chunk': 0, 'total': 0, 'found': 0}
+_llm_progress = {'active': False, 'chunk': 0, 'total': 0, 'found': 0,
+                  'session_id': None, 'cancel': False}
 
 def get_llm_progress() -> dict:
     return dict(_llm_progress)
+
+
+def cancel_llm():
+    """Signal the running LLM pass to abort after the current chunk."""
+    _llm_progress['cancel'] = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,14 +196,15 @@ def _chunk_text(text):
 
 
 def _ollama_generate(prompt: str, system: str,
-                     timeout: int = 180) -> str:
+                     timeout: int = 90) -> str:
     model = _llm_model or DEFAULT_MODEL
     body = json.dumps({
         'model':  model,
         'prompt': prompt,
         'system': system,
         'stream': False,
-        'options': {'temperature': 0.0, 'num_predict': 1200},
+        'keep_alive': '10m',
+        'options': {'temperature': 0.0, 'num_predict': 600, 'num_ctx': 4096},
     }).encode()
 
     req = urllib.request.Request(
@@ -236,11 +243,16 @@ def apply_llm_pass(text: str, db_path, session_id: str,
     patterns_section = _build_patterns_section(user_patterns or [])
 
     chunks = _chunk_text(text)
-    _llm_progress.update({'active': True, 'chunk': 0, 'total': len(chunks), 'found': 0})
+    _llm_progress.update({'active': True, 'chunk': 0, 'total': len(chunks),
+                           'found': 0, 'session_id': session_id, 'cancel': False})
 
     system_prompt = SYSTEM_PROMPT.format(patterns_section=patterns_section)
 
     for i, chunk in enumerate(chunks, 1):
+        if _llm_progress.get('cancel'):
+            print(f'[LLM] Cancelled at chunk {i}/{len(chunks)}')
+            break
+
         _llm_progress['chunk'] = i
         print(f'[LLM] Chunk {i}/{len(chunks)}...')
 
@@ -250,11 +262,11 @@ def apply_llm_pass(text: str, db_path, session_id: str,
             continue
 
         try:
-            raw_response = _ollama_generate(chunk, system_prompt, timeout=180)
+            raw_response = _ollama_generate(chunk, system_prompt, timeout=90)
             raw_response = re.sub(r'```(?:json)?|```', '', raw_response).strip()
             data = json.loads(raw_response)
         except Exception as e:
-            print(f'[LLM] Parse error: {e}')
+            print(f'[LLM] Parse error/timeout on chunk {i}: {e}')
             continue
 
         for entity in data.get('entities', []):
@@ -286,7 +298,8 @@ def apply_llm_pass(text: str, db_path, session_id: str,
             all_replacements[original] = bracketed
             print(f'[LLM] Entity: {repr(original[:60])} -> {bracketed}')
 
-    _llm_progress.update({'active': False, 'found': len(all_replacements)})
+    _llm_progress.update({'active': False, 'found': len(all_replacements),
+                           'cancel': False, 'session_id': None})
     print(f'[LLM] Pass complete — {len(all_replacements)} new entities')
     return text, all_replacements
 
@@ -352,7 +365,7 @@ def process_chat_command(message: str, db_path, session_id: str) -> dict:
     )
 
     try:
-        raw = _ollama_generate(prompt, system, timeout=180)
+        raw = _ollama_generate(prompt, system, timeout=60)
         raw = re.sub(r'```(?:json)?|```', '', raw).strip()
         result = json.loads(raw)
     except Exception as ex:

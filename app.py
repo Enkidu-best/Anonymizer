@@ -110,6 +110,13 @@ def llm_progress():
     return jsonify(get_llm_progress())
 
 
+@app.route('/api/llm-cancel', methods=['POST'])
+def llm_cancel():
+    from core.llm import cancel_llm
+    cancel_llm()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/llm-start', methods=['POST'])
 def llm_start():
     from core.llm import try_start_ollama, check_ollama
@@ -313,6 +320,25 @@ def process():
         'session_id': sid,
         'mappings':   get_session_mappings(DB_PATH, sid),
     })
+
+
+# ── List session output files ─────────────────────────────────────────────────
+@app.route('/api/sessions/<sid>/files')
+def session_files(sid):
+    out_dir = UPLOADS_DIR / sid / 'output'
+    if not out_dir.exists():
+        return jsonify({'files': []})
+    items = []
+    for fp in sorted(out_dir.iterdir()):
+        if fp.is_file():
+            try:
+                items.append({
+                    'output': fp.name,
+                    'size':   fp.stat().st_size,
+                })
+            except OSError:
+                pass
+    return jsonify({'files': items})
 
 
 # ── Download single file ──────────────────────────────────────────────────────
