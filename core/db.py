@@ -23,7 +23,7 @@ def init_db(db_path):
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id     TEXT NOT NULL,
                 token          TEXT NOT NULL,
-                original_form  TEXT NOT NULL,
+                original_form  TEXT NOT NULL DEFAULT '',
                 canonical_form TEXT NOT NULL,
                 entity_type    TEXT NOT NULL,
                 created_at     TEXT DEFAULT (datetime('now','localtime')),
@@ -44,6 +44,12 @@ def init_db(db_path):
                 PRIMARY KEY (session_id, original_form, entity_type)
             );
         ''')
+        # Migration: add original_form column to existing databases
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
+        if 'original_form' not in cols:
+            conn.execute("ALTER TABLE mappings ADD COLUMN original_form TEXT NOT NULL DEFAULT ''")
+            conn.execute('UPDATE mappings SET original_form = canonical_form WHERE original_form = ""')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map_orig ON mappings(session_id, original_form, entity_type)')
 
 
 def create_session(db_path, name: str) -> str:
