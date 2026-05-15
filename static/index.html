@@ -433,7 +433,13 @@ tr:hover td{background:var(--card2)}
           </div>
           <div class="tbl-wrap">
             <table>
-              <thead><tr><th>Токен</th><th>Оригинал</th><th>Канон. форма</th><th>Тип</th><th></th></tr></thead>
+              <thead><tr>
+                <th title="Уникальный идентификатор замены. Подставляется в текст вместо ПДн">Токен</th>
+                <th title="Текст ровно так, как он встречается в документе. Это значение возвращается при деанонимизации">Найдено в документе</th>
+                <th title="Нормализованная (базовая) форма. Используется для группировки разных склонений в один токен. Если не уверены — оставьте равным «Найдено в документе»">Базовая форма</th>
+                <th>Тип</th>
+                <th></th>
+              </tr></thead>
               <tbody id="mapTbody"></tbody>
             </table>
           </div>
@@ -466,9 +472,9 @@ tr:hover td{background:var(--card2)}
   <div class="modal" style="max-width:460px">
     <h3 id="editMapTitle"></h3>
     <div class="modal-token-info hidden" id="editMapTokenInfo">Токен: <span id="editMapTokenVal"></span></div>
-    <label class="modal-field-label">Оригинальная форма</label>
+    <label class="modal-field-label" title="Текст ровно так, как встречается в документе. Возвращается при деанонимизации">Найдено в документе <span style="color:var(--text2);font-weight:400">— что подставлять обратно</span></label>
     <input type="text" class="modal-inp" id="editMapOriginal" placeholder="Иванова Мария Петровна">
-    <label class="modal-field-label">Каноническая форма</label>
+    <label class="modal-field-label" title="Нормализованная форма, по которой группируются разные склонения. Если не уверены — оставьте равной «Найдено в документе»">Базовая форма <span style="color:var(--text2);font-weight:400">— для группировки склонений (необязательно)</span></label>
     <input type="text" class="modal-inp" id="editMapCanonical" placeholder="Иванова Мария Петровна">
     <label class="modal-field-label">Тип сущности</label>
     <select class="modal-inp" id="editMapType">
@@ -686,7 +692,34 @@ async function selectSession(id) {
   $('reprocessBtn').classList.add('hidden');
   renderFileList();updateProcBtn();
   await loadMappings();
+  await loadSessionFiles();
   updateAddManualBtn();
+}
+
+async function loadSessionFiles() {
+  if (!S.active) return;
+  try {
+    const d = await apiFetch(`/api/sessions/${S.active.id}/files`);
+    const existing = (d.files || []).map(f => ({
+      file: { name: f.output, size: f.size || 0 },
+      status: 'ok',
+      output: f.output,
+      entities: 0,
+      error: null,
+      _restored: true,
+    }));
+    if (existing.length) {
+      S.lastSid = S.active.id;
+      S.files = existing.concat(S.files);
+      renderFileList();
+      if (existing.length > 1) {
+        $('dlAllBtn').href = `/api/download-all/${S.active.id}`;
+        $('dlAllBtn').classList.remove('hidden');
+      }
+    }
+  } catch (ex) {
+    console.warn('loadSessionFiles failed:', ex);
+  }
 }
 
 async function delSession(e, id) {
@@ -706,7 +739,11 @@ const DESCS = {
   deanonymize:'Токены заменяются исходными значениями из маппинга текущей сессии.'
 };
 function setMode(m){
-  S.mode=m;S.files=[];renderFileList();updateProcBtn();
+  // Keep pending files visible when user only switches tabs; clear only the
+  // staging area, never the "already processed" rows shown in S.files.
+  S.mode=m;
+  S.files = S.files.filter(x => x.status === 'ok' || x.status === 'err');
+  renderFileList();updateProcBtn();
   $('mAnon').className='mode-btn'+(m==='anonymize'?' active':'');
   $('mDean').className='mode-btn'+(m==='deanonymize'?' active':'');
   $('modeDesc').textContent=DESCS[m];

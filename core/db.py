@@ -50,6 +50,53 @@ def init_db(db_path):
             conn.execute("ALTER TABLE mappings ADD COLUMN original_form TEXT NOT NULL DEFAULT ''")
             conn.execute('UPDATE mappings SET original_form = canonical_form WHERE original_form = ""')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map_orig ON mappings(session_id, original_form, entity_type)')
+        # Enforce token uniqueness within session.
+        # Existing databases may contain duplicates from the old COUNT(*)+1 bug —
+        # rename the duplicates to free token numbers before adding the index.
+        _dedupe_duplicate_tokens(conn)
+        try:
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map_token ON mappings(session_id, token)')
+        except Exception as e:
+            print(f'[DB] Cannot create idx_map_token: {e}')
+
+
+def _dedupe_duplicate_tokens(conn):
+    """Find any (session_id, token) duplicates and renumber the extras
+    to the next free slot for their entity_type."""
+    dupes = conn.execute('''
+        SELECT session_id, token, COUNT(*) c
+        FROM mappings
+        GROUP BY session_id, token
+        HAVING c > 1
+    ''').fetchall()
+    if not dupes:
+        return
+    for d in dupes:
+        sid, bad_tok = d['session_id'], d['token']
+        # Keep the row with the smallest id, renumber the rest
+        rows = conn.execute(
+            'SELECT id, entity_type FROM mappings WHERE session_id=? AND token=? ORDER BY id',
+            (sid, bad_tok)
+        ).fetchall()
+        for extra in rows[1:]:
+            etype = extra['entity_type']
+            prefix = _PREFIX.get(etype, etype.upper())
+            # Compute next free number for this prefix in this session
+            existing = conn.execute(
+                "SELECT token FROM mappings WHERE session_id=? AND token LIKE ?",
+                (sid, f'{prefix}_%')
+            ).fetchall()
+            max_n = 0
+            for r in existing:
+                try:
+                    n = int(r['token'].rsplit('_', 1)[1])
+                    if n > max_n:
+                        max_n = n
+                except (ValueError, IndexError):
+                    pass
+            new_tok = f'{prefix}_{max_n + 1}'
+            conn.execute('UPDATE mappings SET token=? WHERE id=?', (new_tok, extra['id']))
+            print(f'[DB] Renamed duplicate {bad_tok} -> {new_tok} (session {sid[:8]})')
 
 
 def create_session(db_path, name: str) -> str:
@@ -119,6 +166,24 @@ _PREFIX = {
 }
 
 
+def _next_token_number(conn, session_id: str, prefix: str) -> int:
+    """Return next free numeric suffix for tokens with given prefix.
+    Uses MAX(suffix)+1 so deletions never cause collisions."""
+    rows = conn.execute(
+        "SELECT token FROM mappings WHERE session_id=? AND token LIKE ?",
+        (session_id, f'{prefix}_%')
+    ).fetchall()
+    max_n = 0
+    for r in rows:
+        try:
+            n = int(r['token'].rsplit('_', 1)[1])
+            if n > max_n:
+                max_n = n
+        except (ValueError, IndexError):
+            pass
+    return max_n + 1
+
+
 def get_or_create_token(db_path, session_id: str,
                         original_form: str, canonical_form: str,
                         entity_type: str) -> str:
@@ -131,13 +196,9 @@ def get_or_create_token(db_path, session_id: str,
         if row:
             return row['token']
 
-        count = conn.execute(
-            'SELECT COUNT(*) FROM mappings WHERE session_id=? AND entity_type=?',
-            (session_id, entity_type)
-        ).fetchone()[0]
-
         prefix = _PREFIX.get(entity_type, entity_type.upper())
-        token  = f'{prefix}_{count + 1}'
+        n = _next_token_number(conn, session_id, prefix)
+        token = f'{prefix}_{n}'
 
         conn.execute(
             'INSERT OR IGNORE INTO mappings '
