@@ -1,9 +1,7 @@
 """
 File format handlers — TXT, DOCX, PDF, XLSX, RTF.
-All anonymization uses anonymize_text_sequential() which returns
+All anonymization uses anonymize_text_pipeline() which returns
 (anonymized_text, replacements_dict).
-The replacements_dict is then applied paragraph-by-paragraph in DOCX,
-cell-by-cell in XLSX, page-by-page in PDF, etc.
 """
 import os
 import sys
@@ -42,8 +40,8 @@ def _pdf_has_text_layer(filepath: Path) -> bool:
 
 def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
-                          use_llm: bool = False,
-                          use_regex_ner: bool = True) -> dict:
+                          use_spacy: bool = True,
+                          use_llm: bool = False) -> dict:
     valid, err = validate_file(input_path)
     if not valid:
         raise ValueError(err)
@@ -56,19 +54,17 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             stem = stem[len(pfx):]
             break
 
-    # PDFs always converted to DOCX (better quality, reliable deanonymization)
     out_ext = '.docx' if ext == '.pdf' else ext
     output_name = f'{prefix}_{stem}{out_ext}'
     output_path = output_dir / output_name
 
     if mode == 'anonymize':
         result = _anonymize(input_path, output_path, ext, session_id, db_path,
-                            use_llm, use_regex_ner)
+                            use_spacy, use_llm)
     else:
         result = _deanonymize(input_path, output_path, ext, session_id, db_path)
 
     result['output_filename'] = output_name
-    # Fallback PDF path: pdf2docx failed, file saved as .pdf despite .docx expectation
     if '_fallback_path' in result:
         fallback = Path(result.pop('_fallback_path'))
         result['output_filename'] = fallback.name
@@ -80,12 +76,12 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _anonymize(input_path, output_path, ext, session_id, db_path,
-               use_llm=False, use_regex_ner=True):
-    if ext == '.txt':  return _anon_txt(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
-    if ext == '.docx': return _anon_docx(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
-    if ext == '.pdf':  return _anon_pdf(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
-    if ext == '.xlsx': return _anon_xlsx(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
-    if ext == '.rtf':  return _anon_rtf(input_path, output_path, session_id, db_path, use_llm, use_regex_ner)
+               use_spacy=True, use_llm=False):
+    if ext == '.txt':  return _anon_txt(input_path, output_path, session_id, db_path, use_spacy, use_llm)
+    if ext == '.docx': return _anon_docx(input_path, output_path, session_id, db_path, use_spacy, use_llm)
+    if ext == '.pdf':  return _anon_pdf(input_path, output_path, session_id, db_path, use_spacy, use_llm)
+    if ext == '.xlsx': return _anon_xlsx(input_path, output_path, session_id, db_path, use_spacy, use_llm)
+    if ext == '.rtf':  return _anon_rtf(input_path, output_path, session_id, db_path, use_spacy, use_llm)
     raise ValueError(f'Unsupported: {ext}')
 
 
@@ -115,7 +111,6 @@ def _deanonymize(input_path, output_path, ext, session_id, db_path):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _accept_tracked_changes(doc):
-    """Accept all tracked changes via XML manipulation."""
     from docx.oxml.ns import qn
     body = doc.element.body
     for ins in list(body.iter(qn('w:ins'))):
@@ -133,28 +128,16 @@ def _accept_tracked_changes(doc):
             parent.remove(del_elem)
 
 
-def _collect_docx_text(doc) -> str:
-    parts = [p.text for p in doc.paragraphs]
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                parts += [p.text for p in cell.paragraphs]
-    return '\n'.join(parts)
-
-
 def _replace_para(para, replacements: dict):
-    """Apply replacement dict to a paragraph, handling cross-run spans."""
     if not replacements or not para.text.strip():
         return
     sorted_reps = sorted(replacements.items(), key=lambda x: -len(x[0]))
 
-    # Pass 1: per-run (fast path, covers ~90% of cases)
     for old, new in sorted_reps:
         for run in para.runs:
             if old in run.text:
                 run.text = run.text.replace(old, new)
 
-    # Pass 2: cross-run (entity spans a formatting boundary)
     for old, new in sorted_reps:
         if old not in para.text:
             continue
@@ -169,11 +152,6 @@ def _replace_para(para, replacements: dict):
         for r in runs[1:]:
             r.text = ''
 
-    # Pass 3: hyperlinks — email/URL stored as w:hyperlink rather than plain w:r.
-    # para.runs does NOT include runs inside w:hyperlink elements, so we walk the XML.
-    # After replacing the display text we UNWRAP the w:hyperlink element: move its
-    # child w:r runs up to the parent so the link target (r:id / href) is removed.
-    # This prevents the clickable link from still pointing to the original email/URL.
     try:
         from docx.oxml.ns import qn
         for hl in list(para._p.iter(qn('w:hyperlink'))):
@@ -212,70 +190,47 @@ def _iter_all_paras(doc):
 
 
 def _anon_txt(input_path, output_path, session_id, db_path,
-              use_llm=False, use_regex_ner=True):
-    from core.anonymizer import anonymize_text_sequential
+              use_spacy=True, use_llm=False):
+    from core.anonymizer import anonymize_text_pipeline
     text      = input_path.read_text(encoding='utf-8', errors='replace')
-    out, reps = anonymize_text_sequential(text, db_path, session_id,
-                                          use_llm=use_llm,
-                                          use_regex_ner=use_regex_ner)
+    out, reps = anonymize_text_pipeline(text, db_path, session_id,
+                                        use_spacy=use_spacy, use_llm=use_llm)
     output_path.write_text(out, encoding='utf-8')
     return {'entities_found': len(reps)}
 
 
 def _anon_docx(input_path, output_path, session_id, db_path,
-               use_llm=False, use_regex_ner=True):
+               use_spacy=True, use_llm=False):
     from docx import Document
-    from core.anonymizer import anonymize_text_sequential
+    from core.anonymizer import anonymize_text_pipeline
 
     doc = Document(str(input_path))
     _accept_tracked_changes(doc)
 
-    all_paras  = list(_iter_all_paras(doc))
-    total_reps = {}
+    all_replacements = {}
 
-    # Passes 1-3 (OPF regex, structured regex, NER) — per paragraph so NER sees
-    # each paragraph's actual grammatical form (genitive/dative/etc.)
-    if use_regex_ner:
-        for para in all_paras:
-            if not para.text.strip():
-                continue
-            _, reps = anonymize_text_sequential(para.text, db_path, session_id,
-                                                use_llm=False, use_regex_ner=True)
-            if reps:
-                _replace_para(para, reps)
-                total_reps.update(reps)
-
-    # Pass 4 (LLM) — single call on full document text to avoid N×timeout hangs.
-    # full_scan=True when regex/NER was skipped (LLM-only mode) so LLM covers
-    # all entity types including INN/OGRN/accounts/phones/etc.
-    if use_llm:
-        try:
-            from core.llm import apply_llm_pass
-            combined = '\n'.join(p.text for p in all_paras if p.text.strip())
-            _, llm_reps = apply_llm_pass(combined, db_path, session_id,
-                                          full_scan=not use_regex_ner)
-            if llm_reps:
-                for para in all_paras:
-                    if para.text.strip():
-                        _replace_para(para, llm_reps)
-                total_reps.update(llm_reps)
-                print(f'[LLM] Applied {len(llm_reps)} entity(ies) to document')
-        except Exception as ex:
-            print(f'[LLM] Document-level pass error: {ex}')
+    for para in _iter_all_paras(doc):
+        if not para.text.strip():
+            continue
+        _, reps = anonymize_text_pipeline(
+            para.text, db_path, session_id,
+            use_spacy=use_spacy, use_llm=use_llm,
+        )
+        if reps:
+            all_replacements.update(reps)
+            _replace_para(para, reps)
 
     doc.save(str(output_path))
-    return {'entities_found': len(total_reps)}
+    return {'entities_found': len(all_replacements)}
 
 
 def _deanon_docx(input_path, output_path, rev):
     from docx import Document
-    from core.anonymizer import apply_reverse
 
     doc = Document(str(input_path))
     _accept_tracked_changes(doc)
 
     if rev:
-        # Build both [TOKEN] and bare TOKEN replacements
         reps = {}
         for tok, orig in rev.items():
             reps[f'[{tok}]'] = orig
@@ -322,71 +277,19 @@ def _find_cyrillic_font() -> str | None:
 
 
 def _anon_pdf(input_path, output_path, session_id, db_path,
-              use_llm=False, use_regex_ner=True):
+              use_spacy=True, use_llm=False):
     """
-    Convert PDF → DOCX via pdf2docx (preserves layout/fonts), then anonymize
-    per-paragraph. Output is .docx — much better quality than in-place PDF redaction.
-    Falls back to raw-text redaction if conversion fails.
+    Extract text from PDF via PyMuPDF, anonymize, then redact in-place.
+    Output is always PDF (no pdf2docx dependency).
+    For DOCX output the user can upload the original DOCX.
     """
-    import tempfile
-    from core.anonymizer import anonymize_text_sequential
-
-    # ── Step 1: PDF → DOCX conversion ────────────────────────────────────────
-    tmp_docx = Path(tempfile.mktemp(suffix='.docx'))
-    converted = False
-    try:
-        from pdf2docx import Converter
-        cv = Converter(str(input_path))
-        cv.convert(str(tmp_docx), start=0, end=None)
-        cv.close()
-        converted = True
-    except Exception as conv_err:
-        print(f'[PDF] pdf2docx conversion failed: {conv_err}. Falling back to text redaction.')
-
-    if converted:
-        # ── Step 2: anonymize the DOCX per-paragraph (LLM at document level) ─
-        from docx import Document
-        doc = Document(str(tmp_docx))
-        all_paras  = list(_iter_all_paras(doc))
-        total_reps = {}
-
-        if use_regex_ner:
-            for para in all_paras:
-                if not para.text.strip():
-                    continue
-                _, reps = anonymize_text_sequential(para.text, db_path, session_id,
-                                                    use_llm=False, use_regex_ner=True)
-                if reps:
-                    _replace_para(para, reps)
-                    total_reps.update(reps)
-
-        if use_llm:
-            try:
-                from core.llm import apply_llm_pass
-                combined = '\n'.join(p.text for p in all_paras if p.text.strip())
-                _, llm_reps = apply_llm_pass(combined, db_path, session_id,
-                                              full_scan=not use_regex_ner)
-                if llm_reps:
-                    for para in all_paras:
-                        if para.text.strip():
-                            _replace_para(para, llm_reps)
-                    total_reps.update(llm_reps)
-            except Exception as ex:
-                print(f'[LLM] PDF document-level pass error: {ex}')
-
-        doc.save(str(output_path))
-        try:
-            tmp_docx.unlink()
-        except Exception:
-            pass
-        return {'entities_found': len(total_reps)}
-
-    # ── Fallback: in-place PDF text redaction (scanned / complex PDFs) ────────
     import fitz
-    doc      = fitz.open(str(input_path))
+    from core.anonymizer import anonymize_text_pipeline
+
+    doc = fitz.open(str(input_path))
     all_text = '\n'.join(p.get_text() for p in doc)
-    _, reps  = anonymize_text_sequential(all_text, db_path, session_id,
-                                         use_llm=use_llm, use_regex_ner=use_regex_ner)
+    _, reps = anonymize_text_pipeline(all_text, db_path, session_id,
+                                      use_spacy=use_spacy, use_llm=use_llm)
 
     if reps:
         sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
@@ -401,50 +304,19 @@ def _anon_pdf(input_path, output_path, session_id, db_path,
                     )
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-    # fallback saves as PDF (note: output_path will have .docx extension from
-    # process_uploaded_file — rename back to .pdf for the fallback case)
     pdf_out = output_path.with_suffix('.pdf')
     doc.save(str(pdf_out), garbage=4, deflate=True)
     return {'entities_found': len(reps), '_fallback_path': str(pdf_out)}
 
 
 def _deanon_pdf(input_path, output_path, rev):
-    """
-    Convert PDF → DOCX via pdf2docx, then deanonymize as DOCX.
-    output_path already has .docx extension (set in process_uploaded_file).
-    Falls back to fitz text substitution if conversion fails.
-    """
-    import tempfile
+    import fitz
+    from core.anonymizer import apply_reverse
 
     if not rev:
         import shutil
         shutil.copy2(str(input_path), str(output_path.with_suffix('.pdf')))
         return {'_fallback_path': str(output_path.with_suffix('.pdf'))}
-
-    # Try pdf2docx conversion
-    tmp_docx = Path(tempfile.mktemp(suffix='.docx'))
-    converted = False
-    try:
-        from pdf2docx import Converter
-        cv = Converter(str(input_path))
-        cv.convert(str(tmp_docx), start=0, end=None)
-        cv.close()
-        converted = True
-        print(f'[PDF deanon] pdf2docx conversion OK → {tmp_docx.name}')
-    except Exception as conv_err:
-        print(f'[PDF deanon] pdf2docx failed: {conv_err}. Falling back to fitz.')
-
-    if converted:
-        result = _deanon_docx(tmp_docx, output_path, rev)
-        try:
-            tmp_docx.unlink()
-        except Exception:
-            pass
-        return result
-
-    # ── Fallback: fitz text substitution (lower quality) ──────────────────────
-    import fitz
-    from core.anonymizer import apply_reverse
 
     cyrillic_font = _find_cyrillic_font()
     doc = fitz.open(str(input_path))
@@ -489,9 +361,9 @@ def _deanon_pdf(input_path, output_path, rev):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _anon_xlsx(input_path, output_path, session_id, db_path,
-               use_llm=False, use_regex_ner=True):
+               use_spacy=True, use_llm=False):
     from openpyxl import load_workbook
-    from core.anonymizer import anonymize_text_sequential
+    from core.anonymizer import anonymize_text_pipeline
 
     wb = load_workbook(str(input_path))
     all_text = '\n'.join(
@@ -499,8 +371,8 @@ def _anon_xlsx(input_path, output_path, session_id, db_path,
         for row in ws.iter_rows() for cell in row
         if isinstance(cell.value, str) and cell.value.strip()
     )
-    _, reps = anonymize_text_sequential(all_text, db_path, session_id,
-                                        use_llm=use_llm, use_regex_ner=use_regex_ner)
+    _, reps = anonymize_text_pipeline(all_text, db_path, session_id,
+                                      use_spacy=use_spacy, use_llm=use_llm)
 
     if reps:
         sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
@@ -544,12 +416,12 @@ def _extract_rtf_plain(filepath: Path) -> str:
 
 
 def _anon_rtf(input_path, output_path, session_id, db_path,
-              use_llm=False, use_regex_ner=True):
-    from core.anonymizer import anonymize_text_sequential
+              use_spacy=True, use_llm=False):
+    from core.anonymizer import anonymize_text_pipeline
 
     plain   = _extract_rtf_plain(input_path)
-    _, reps = anonymize_text_sequential(plain, db_path, session_id,
-                                        use_llm=use_llm, use_regex_ner=use_regex_ner)
+    _, reps = anonymize_text_pipeline(plain, db_path, session_id,
+                                      use_spacy=use_spacy, use_llm=use_llm)
     raw        = input_path.read_bytes().decode('utf-8', errors='replace')
     for orig, tok in sorted(reps.items(), key=lambda x: -len(x[0])):
         raw = raw.replace(orig, tok)
