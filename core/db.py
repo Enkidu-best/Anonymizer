@@ -14,8 +14,8 @@ def init_db(db_path):
     with get_conn(db_path) as conn:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS sessions (
-                id   TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
                 created_at TEXT DEFAULT (datetime('now','localtime'))
             );
 
@@ -23,10 +23,25 @@ def init_db(db_path):
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id     TEXT NOT NULL,
                 token          TEXT NOT NULL,
+                original_form  TEXT NOT NULL,
                 canonical_form TEXT NOT NULL,
                 entity_type    TEXT NOT NULL,
                 created_at     TEXT DEFAULT (datetime('now','localtime')),
-                UNIQUE(session_id, canonical_form, entity_type)
+                UNIQUE(session_id, original_form, entity_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_patterns (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern     TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            );
+
+            CREATE TABLE IF NOT EXISTS exclusions (
+                session_id    TEXT NOT NULL,
+                original_form TEXT NOT NULL,
+                entity_type   TEXT NOT NULL,
+                PRIMARY KEY (session_id, original_form, entity_type)
             );
         ''')
 
@@ -53,14 +68,15 @@ def get_all_sessions(db_path):
 
 def delete_session(db_path, session_id: str):
     with get_conn(db_path) as conn:
-        conn.execute('DELETE FROM mappings WHERE session_id=?', (session_id,))
-        conn.execute('DELETE FROM sessions  WHERE id=?',         (session_id,))
+        conn.execute('DELETE FROM mappings    WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM exclusions  WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM sessions    WHERE id=?',         (session_id,))
 
 
 def get_session_mappings(db_path, session_id: str):
     with get_conn(db_path) as conn:
         rows = conn.execute('''
-            SELECT token, canonical_form, entity_type, created_at
+            SELECT token, original_form, canonical_form, entity_type, created_at
             FROM mappings
             WHERE session_id=?
             ORDER BY entity_type, token
@@ -68,7 +84,6 @@ def get_session_mappings(db_path, session_id: str):
     return [dict(r) for r in rows]
 
 
-# Token prefix map  (entity_type → ASCII prefix so tokens are PDF-safe)
 _PREFIX = {
     'ФИО':      'FIO',
     'ЮЛ':       'YUL',
@@ -84,20 +99,28 @@ _PREFIX = {
     'EMAIL':    'EMAIL',
     'SWIFT':    'SWIFT',
     'АДРЕС':    'ADR',
+    'АДРЕС_ФИЗ': 'ADR',
+    'АДРЕС_ЮР': 'ADR',
     'ДАТАРОЖД': 'DOB',
     'ЛИЦЕНЗИЯ': 'LIC',
     'URL':      'URL',
+    'FIO':      'FIO',
+    'YUL':      'YUL',
+    'ADDR_PHYS': 'ADR',
+    'ADDR_CORP': 'ADR',
+    'PASSPORT':  'PASSPORT',
+    'DOB':       'DOB',
 }
 
 
 def get_or_create_token(db_path, session_id: str,
-                        canonical_form: str, entity_type: str) -> str:
-    """Return existing token or create a new one for this entity."""
+                        original_form: str, canonical_form: str,
+                        entity_type: str) -> str:
     with get_conn(db_path) as conn:
         row = conn.execute(
             'SELECT token FROM mappings '
-            'WHERE session_id=? AND canonical_form=? AND entity_type=?',
-            (session_id, canonical_form, entity_type)
+            'WHERE session_id=? AND original_form=? AND entity_type=?',
+            (session_id, original_form, entity_type)
         ).fetchone()
         if row:
             return row['token']
@@ -112,14 +135,14 @@ def get_or_create_token(db_path, session_id: str,
 
         conn.execute(
             'INSERT OR IGNORE INTO mappings '
-            '(session_id, token, canonical_form, entity_type) VALUES (?,?,?,?)',
-            (session_id, token, canonical_form, entity_type)
+            '(session_id, token, original_form, canonical_form, entity_type) '
+            'VALUES (?,?,?,?,?)',
+            (session_id, token, original_form, canonical_form, entity_type)
         )
     return token
 
 
 def delete_mapping(db_path, session_id: str, token: str):
-    """Remove a single mapping by token from a session."""
     with get_conn(db_path) as conn:
         conn.execute(
             'DELETE FROM mappings WHERE session_id=? AND token=?',
@@ -128,10 +151,6 @@ def delete_mapping(db_path, session_id: str, token: str):
 
 
 def update_mapping(db_path, session_id: str, token: str, data: dict):
-    """
-    Update canonical_form and/or entity_type for an existing mapping.
-    data may contain 'canonical_form' and/or 'entity_type'.
-    """
     with get_conn(db_path) as conn:
         if data.get('canonical_form'):
             conn.execute(
@@ -145,11 +164,85 @@ def update_mapping(db_path, session_id: str, token: str, data: dict):
             )
 
 
+def update_mapping_original(db_path, session_id: str, token: str, new_original: str):
+    with get_conn(db_path) as conn:
+        conn.execute(
+            'UPDATE mappings SET original_form=? WHERE session_id=? AND token=?',
+            (new_original, session_id, token)
+        )
+
+
 def get_reverse_mappings(db_path, session_id: str) -> dict:
-    """Return {token: canonical_form} for deanonymization."""
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            'SELECT token, canonical_form FROM mappings WHERE session_id=?',
+            'SELECT token, original_form FROM mappings WHERE session_id=?',
             (session_id,)
         ).fetchall()
-    return {r['token']: r['canonical_form'] for r in rows}
+    return {r['token']: r['original_form'] for r in rows}
+
+
+def get_top_patterns(db_path, entity_type=None, limit=20) -> list:
+    with get_conn(db_path) as conn:
+        if entity_type:
+            rows = conn.execute(
+                'SELECT id, pattern, entity_type, created_at '
+                'FROM user_patterns WHERE entity_type=? '
+                'ORDER BY created_at DESC LIMIT ?',
+                (entity_type, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT id, pattern, entity_type, created_at '
+                'FROM user_patterns '
+                'ORDER BY created_at DESC LIMIT ?',
+                (limit,)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_user_pattern(db_path, pattern: str, entity_type: str):
+    if not pattern.strip():
+        return
+    with get_conn(db_path) as conn:
+        existing = conn.execute(
+            'SELECT id FROM user_patterns WHERE pattern=? AND entity_type=?',
+            (pattern, entity_type)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                'INSERT INTO user_patterns (pattern, entity_type) VALUES (?,?)',
+                (pattern, entity_type)
+            )
+
+
+def delete_user_pattern(db_path, pattern_id: int):
+    with get_conn(db_path) as conn:
+        conn.execute('DELETE FROM user_patterns WHERE id=?', (pattern_id,))
+
+
+def add_exclusion(db_path, session_id: str, original_form: str, entity_type: str):
+    """Mark original_form+entity_type as excluded — skip on reprocess."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            'INSERT OR IGNORE INTO exclusions (session_id, original_form, entity_type) '
+            'VALUES (?,?,?)',
+            (session_id, original_form, entity_type)
+        )
+
+
+def get_exclusions(db_path, session_id: str) -> set:
+    """Return set of (original_form, entity_type) to skip during pipeline."""
+    with get_conn(db_path) as conn:
+        try:
+            rows = conn.execute(
+                'SELECT original_form, entity_type FROM exclusions WHERE session_id=?',
+                (session_id,)
+            ).fetchall()
+            return {(r['original_form'], r['entity_type']) for r in rows}
+        except Exception:
+            return set()
+
+
+def delete_session_exclusions(db_path, session_id: str):
+    with get_conn(db_path) as conn:
+        conn.execute('DELETE FROM exclusions WHERE session_id=?', (session_id,))

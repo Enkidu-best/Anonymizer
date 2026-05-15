@@ -13,6 +13,7 @@
   --success:#10d472;--success-bg:rgba(16,212,114,.1);
   --warn:#f0a922;--warn-bg:rgba(240,169,34,.1);
   --danger:#ef4444;--danger-bg:rgba(239,68,68,.1);
+  --purple:#a78bfa;--purple-bg:rgba(167,139,250,.12);
   --text:#e2e8f5;--text2:#8fa0be;--text3:#4d6080;
   --font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   --r:10px;--r2:6px;--t:.18s ease
@@ -56,7 +57,7 @@ header{
 }
 .llm-badge:hover{border-color:var(--primary);color:var(--text)}
 .llm-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:background .4s}
-.llm-dot.ready{background:#a78bfa}
+.llm-dot.ready{background:var(--purple)}
 
 .btn-exit{
   display:flex;align-items:center;gap:5px;padding:5px 11px;border-radius:var(--r2);
@@ -114,7 +115,7 @@ header{
 .mode-btn:not(.active):hover{background:var(--card2);color:var(--text)}
 .mode-desc{font-size:12px;color:var(--text3);margin-bottom:16px}
 
-/* ── Processing mode 3-way toggle ── */
+/* ── Processing mode 4-way toggle ── */
 .proc-mode-row{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
 .pm-btn{
   padding:7px 14px;border-radius:var(--r2);border:1px solid var(--border2);
@@ -123,6 +124,11 @@ header{
 }
 .pm-btn.active{background:rgba(167,139,250,.18);border-color:rgba(167,139,250,.5);color:#a78bfa}
 .pm-btn:not(.active):hover{background:var(--card2);color:var(--text)}
+
+/* ── Settings row ── */
+.settings-row{display:flex;gap:14px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.setting-check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer}
+.setting-check input{accent-color:var(--purple)}
 
 /* ── LLM panel ── */
 .llm-panel{
@@ -146,6 +152,12 @@ select.llm-select{
   cursor:pointer;font-family:var(--font);transition:all var(--t)
 }
 .btn-map-add:hover{background:var(--primary);color:#fff}
+.btn-reprocess{
+  padding:5px 11px;background:rgba(240,169,34,.12);border:1px solid var(--warn);
+  border-radius:var(--r2);color:var(--warn);font-size:12px;font-weight:600;
+  cursor:pointer;font-family:var(--font);transition:all var(--t)
+}
+.btn-reprocess:hover{background:var(--warn);color:#000}
 .td-actions{display:flex;gap:4px;white-space:nowrap}
 .btn-td{padding:3px 8px;border-radius:4px;border:none;font-size:11px;font-weight:600;
   cursor:pointer;font-family:var(--font);transition:all var(--t)}
@@ -154,34 +166,11 @@ select.llm-select{
 .btn-td-del{background:rgba(239,68,68,.1);color:var(--danger)}
 .btn-td-del:hover{background:var(--danger);color:#fff}
 
-/* ── LLM chat (user request field) ── */
-.llm-chat{
-  margin-top:14px;padding:12px 14px;
-  background:rgba(167,139,250,.05);border:1px solid rgba(167,139,250,.18);
-  border-radius:var(--r2)
-}
-.llm-chat.hidden{display:none!important}
-.llm-chat-label{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;
-  color:#a78bfa;margin-bottom:8px}
-.llm-chat-hint{font-size:11px;color:var(--text3);margin-bottom:8px}
-.llm-chat-row{display:flex;gap:6px}
-.llm-chat-inp{
-  flex:1;padding:7px 11px;background:var(--card);border:1px solid var(--border2);
-  border-radius:var(--r2);color:var(--text);font-size:13px;font-family:var(--font);outline:none;
-  transition:border-color var(--t)
-}
-.llm-chat-inp:focus{border-color:rgba(167,139,250,.6)}
-.llm-chat-inp::placeholder{color:var(--text3)}
-.btn-chat-send{
-  padding:7px 14px;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.4);
-  border-radius:var(--r2);color:#a78bfa;font-size:12px;font-weight:600;
-  cursor:pointer;font-family:var(--font);transition:all var(--t);white-space:nowrap
-}
-.btn-chat-send:hover{background:rgba(167,139,250,.3)}
-.btn-chat-send:disabled{opacity:.4;cursor:not-allowed}
-.llm-chat-resp{font-size:12px;color:var(--text2);margin-top:8px;min-height:0}
-.llm-chat-resp.ok{color:var(--success)}
-.llm-chat-resp.err{color:var(--danger)}
+/* ── Edit/Add mapping modal extras ── */
+.modal label.modal-field-label{display:block;font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase}
+.modal select.modal-inp{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238fa0be'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;cursor:pointer}
+.modal-token-info{font-size:11px;color:var(--text3);margin-bottom:12px;font-family:'SF Mono','Fira Code','Consolas',monospace}
+.modal-token-info span{color:var(--primary);font-weight:700}
 
 /* ── DROP ZONE ── */
 .drop-zone{
@@ -260,9 +249,9 @@ tr:hover td{background:var(--card2)}
 .t-INN,.t-OGRN,.t-KPP{background:rgba(16,212,114,.12);color:#34d399}
 .t-RS,.t-KS,.t-BIK{background:rgba(236,72,153,.12);color:#f472b6}
 .t-TEL,.t-EMAIL{background:rgba(251,146,60,.12);color:#fb923c}
-.t-PASSPORT,.t-SNILS,.t-ДАТАРОЖД{background:rgba(167,139,250,.12);color:#a78bfa}
+.t-PASSPORT,.t-SNILS,.t-DOB{background:rgba(167,139,250,.12);color:#a78bfa}
 .t-SWIFT{background:rgba(56,189,248,.12);color:#38bdf8}
-.t-АДРЕС,.t-ADR{background:rgba(20,184,166,.12);color:#2dd4bf}
+.t-ADR{background:rgba(20,184,166,.12);color:#2dd4bf}
 .t-LIC{background:rgba(239,68,68,.12);color:#f87171}
 .t-URL{background:rgba(14,165,233,.12);color:#38bdf8}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
@@ -315,9 +304,9 @@ tr:hover td{background:var(--card2)}
   <div class="spacer"></div>
 
   <!-- NER status -->
-  <div class="ner-pill" id="nerPill" title="Статус модуля Natasha NER">
+  <div class="ner-pill" id="nerPill" title="Статус модуля spaCy NER">
     <div class="ner-dot pulse" id="nerDot"></div>
-    <span id="nerText">NER загружается…</span>
+    <span id="nerText">spaCy загружается...</span>
   </div>
 
   <!-- LLM badge -->
@@ -357,23 +346,23 @@ tr:hover td{background:var(--card2)}
       </div>
       <div class="mode-desc" id="modeDesc">Персональные данные заменяются токенами. Маппинг сохраняется в сессии.</div>
 
-      <!-- PROCESSING MODE: 3-way toggle (anonymize only) -->
+      <!-- PROCESSING MODE: 3-way toggle -->
       <div class="proc-mode-row" id="procModeRow">
-        <button class="pm-btn active" id="pm1" onclick="setProcMode('regex_ner')"
-          title="Только регулярные выражения и Natasha NER — без LLM">
-          🔍 Regex + NER
+        <button class="pm-btn active" id="pm1" onclick="setProcMode('regex_spacy')"
+          title="Регулярные выражения + spaCy NER">
+          Regex + spaCy
         </button>
-        <button class="pm-btn" id="pm2" onclick="setProcMode('llm_only')"
-          title="Только LLM (Ollama) — без регулярок. LLM находит ВСЕ типы данных.">
-          🤖 Только LLM
+        <button class="pm-btn" id="pm2" onclick="setProcMode('regex_spacy_llm')"
+          title="Регулярки + spaCy + LLM дополняет пропущенное">
+          Regex + spaCy + LLM
         </button>
-        <button class="pm-btn" id="pm3" onclick="setProcMode('regex_ner_llm')"
-          title="Регулярки + NER, затем LLM дополняет пропущенное">
-          ⚡ Regex + NER + LLM
+        <button class="pm-btn" id="pm3" onclick="setProcMode('llm_only')"
+          title="Только LLM (Ollama) — без регулярок и NER">
+          Только LLM
         </button>
       </div>
 
-      <!-- LLM PANEL (shown for modes 2 and 3) -->
+      <!-- LLM PANEL -->
       <div class="llm-panel hidden" id="llmPanel">
         <span class="llm-panel-label">Ollama LLM</span>
         <select class="llm-select" id="llmModelSelect" onchange="onLlmModelChange()">
@@ -381,7 +370,7 @@ tr:hover td{background:var(--card2)}
         </select>
         <button id="llmStartBtn" class="hidden" onclick="startOllama()"
           style="padding:4px 10px;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.4);border-radius:6px;color:#a78bfa;font-size:12px;cursor:pointer;font-family:var(--font)">
-          ▶ Запустить Ollama
+          Запустить Ollama
         </button>
         <span class="llm-info" id="llmInfo">Ollama не обнаружен</span>
       </div>
@@ -423,7 +412,7 @@ tr:hover td{background:var(--card2)}
         </div>
         <div id="mapBody">
           <div class="map-controls">
-            <input class="map-search" id="mapSearch" placeholder="Поиск…" oninput="filterMap()">
+            <input class="map-search" id="mapSearch" placeholder="Поиск..." oninput="filterMap()">
             <select class="map-filter" id="mapType" onchange="filterMap()">
               <option value="">Все типы</option>
               <option value="FIO">ФИО</option><option value="YUL">Организация</option>
@@ -437,28 +426,16 @@ tr:hover td{background:var(--card2)}
               <option value="LIC">Лицензия ЦБ</option><option value="URL">URL / Сайт</option>
             </select>
           </div>
-          <!-- Quick-add row -->
+          <!-- Quick-add row + reprocess -->
           <div class="map-crud-row">
-            <button class="btn-map-add" onclick="addMappingManual()">+ Добавить вручную</button>
+            <button class="btn-map-add" id="btnAddManual" onclick="addMappingManual()" disabled>+ Добавить вручную</button>
+            <button class="btn-reprocess hidden" id="reprocessBtn" onclick="doReprocess()">🔄 Переобработать</button>
           </div>
           <div class="tbl-wrap">
             <table>
-              <thead><tr><th>Токен</th><th>Исходное значение</th><th>Тип</th><th>Дата</th><th></th></tr></thead>
+              <thead><tr><th>Токен</th><th>Оригинал</th><th>Канон. форма</th><th>Тип</th><th></th></tr></thead>
               <tbody id="mapTbody"></tbody>
             </table>
-          </div>
-
-          <!-- LLM request field (visible only when llm is in use) -->
-          <div class="llm-chat hidden" id="llmChat">
-            <div class="llm-chat-label">🤖 Запрос к LLM для изменения маппинга</div>
-            <div class="llm-chat-hint">Опишите что добавить, исправить или удалить. Например: «Добавь иностранную компанию Daimler AG», «Удали FIO_3», «Исправь INN_1 на 7707083893»</div>
-            <div class="llm-chat-row">
-              <input class="llm-chat-inp" id="llmChatInp"
-                placeholder="Напишите запрос…"
-                onkeydown="if(event.key==='Enter')sendLlmRequest()">
-              <button class="btn-chat-send" id="llmChatBtn" onclick="sendLlmRequest()">Отправить</button>
-            </div>
-            <div class="llm-chat-resp hidden" id="llmChatResp"></div>
           </div>
 
         </div>
@@ -469,7 +446,7 @@ tr:hover td{background:var(--card2)}
 </div>
 </div>
 
-<!-- MODAL (shared, context-aware) -->
+<!-- MODAL -->
 <div class="modal-overlay hidden" id="modalOverlay">
   <div class="modal">
     <h3 id="modalTitle"></h3>
@@ -484,17 +461,55 @@ tr:hover td{background:var(--card2)}
 
 <div id="toasts"></div>
 
+<!-- EDIT / ADD MAPPING MODAL -->
+<div class="modal-overlay hidden" id="editMapOverlay">
+  <div class="modal" style="max-width:460px">
+    <h3 id="editMapTitle"></h3>
+    <div class="modal-token-info hidden" id="editMapTokenInfo">Токен: <span id="editMapTokenVal"></span></div>
+    <label class="modal-field-label">Оригинальная форма</label>
+    <input type="text" class="modal-inp" id="editMapOriginal" placeholder="Иванова Мария Петровна">
+    <label class="modal-field-label">Каноническая форма</label>
+    <input type="text" class="modal-inp" id="editMapCanonical" placeholder="Иванова Мария Петровна">
+    <label class="modal-field-label">Тип сущности</label>
+    <select class="modal-inp" id="editMapType">
+      <option value="ФИО">ФИО</option>
+      <option value="ЮЛ">Организация (ЮЛ)</option>
+      <option value="ИНН">ИНН</option>
+      <option value="ОГРН">ОГРН</option>
+      <option value="КПП">КПП</option>
+      <option value="РС">Расчётный счёт</option>
+      <option value="КС">Корр. счёт</option>
+      <option value="БИК">БИК</option>
+      <option value="ПАСПОРТ">Паспорт</option>
+      <option value="ТЕЛЕФОН">Телефон</option>
+      <option value="EMAIL">Email</option>
+      <option value="АДРЕС">Адрес</option>
+      <option value="ДАТАРОЖД">Дата рождения</option>
+      <option value="СНИЛС">СНИЛС</option>
+      <option value="SWIFT">SWIFT</option>
+      <option value="ЛИЦЕНЗИЯ">Лицензия ЦБ</option>
+      <option value="URL">URL</option>
+    </select>
+    <div class="modal-btns" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="closeEditMapModal(false)">Отмена</button>
+      <button class="btn-modal-ok" id="editMapOkBtn" onclick="closeEditMapModal(true)">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ─── State ───────────────────────────────────────────────────────────────────
 const S = {
   sessions: [], active: null,
   mode: 'anonymize',
-  procMode: 'regex_ner',  // 'regex_ner' | 'llm_only' | 'regex_ner_llm'
-  files: [],       // [{file, status, output, entities, error}]
+  procMode: 'regex_spacy',  // 'regex_spacy' | 'regex_spacy_llm' | 'llm_only'
+  files: [],
   mappings: [],
   mapOpen: true,
   lastSid: null,
+  needsReprocess: false,
   _modalResolve: null,
+  _editMapResolve: null,
 };
 
 // ─── Init ────────────────────────────────────────────────────────────────────
@@ -502,6 +517,16 @@ async function init() {
   await loadSessions();
   pollNer();
   checkLlm();
+  autoSelectProcMode();
+}
+
+async function autoSelectProcMode() {
+  try {
+    const llm = await apiFetch('/api/llm-status');
+    if (llm.available) {
+      setProcMode('regex_spacy_llm');
+    }
+  } catch {}
 }
 
 // ─── NER status ──────────────────────────────────────────────────────────────
@@ -512,16 +537,15 @@ async function pollNer() {
     if (d.version) $('appVersion').textContent = 'v' + d.version;
     if (d.ready) {
       dot.className = 'ner-dot ready';
-      txt.textContent = 'NER готов';
+      txt.textContent = 'spaCy готов';
     } else if (d.loading) {
       dot.className = 'ner-dot pulse';
-      txt.textContent = 'NER загружается…';
+      txt.textContent = 'spaCy загружается...';
       setTimeout(pollNer, 2500);
     } else {
       dot.className = 'ner-dot err';
-      const py = (d.python || '').split(' ')[0];
-      txt.textContent = `NER: ошибка (Python ${py})`;
-      $('nerPill').title = `Natasha требует Python ≤ 3.12. Установлен ${py}. ОПФ юрлиц и структурированные данные обрабатываются без NER.`;
+      txt.textContent = 'spaCy: ошибка';
+      $('nerPill').title = d.error || 'Ошибка загрузки spaCy';
     }
   } catch { setTimeout(pollNer, 3000); }
 }
@@ -529,22 +553,17 @@ async function pollNer() {
 // ─── Processing mode 3-way toggle ────────────────────────────────────────────
 function setProcMode(mode) {
   S.procMode = mode;
-  ['pm1','pm2','pm3'].forEach(id => $( id).classList.remove('active'));
-  const idx = {regex_ner:0, llm_only:1, regex_ner_llm:2}[mode] || 0;
-  ['pm1','pm2','pm3'][idx].split(','); // re-use array
-  $(['pm1','pm2','pm3'][idx]).classList.add('active');
+  ['pm1','pm2','pm3'].forEach(id => $(id).classList.remove('active'));
+  const btnId = {regex_spacy:'pm1', regex_spacy_llm:'pm2', llm_only:'pm3'}[mode] || 'pm1';
+  $(btnId).classList.add('active');
 
-  // LLM panel visible for modes 2 and 3 (anonymize only)
-  const needsLlm = (mode === 'llm_only' || mode === 'regex_ner_llm');
+  const needsLlm = (mode === 'llm_only' || mode === 'regex_spacy_llm');
   $('llmPanel').classList.toggle('hidden', !needsLlm || S.mode !== 'anonymize');
-  // LLM chat visible when LLM is involved
-  $('llmChat').classList.toggle('hidden', !needsLlm);
 }
 
-// ─── LLM (Ollama) ────────────────────────────────────────────────────────────
+// ─── LLM ─────────────────────────────────────────────────────────────────────
 function toggleLlmPanel() {
-  // Header badge click — cycle through modes
-  const modes = ['regex_ner','llm_only','regex_ner_llm'];
+  const modes = ['regex_spacy','regex_spacy_llm','llm_only'];
   const next = modes[(modes.indexOf(S.procMode) + 1) % modes.length];
   if (S.mode === 'anonymize') setProcMode(next);
 }
@@ -559,12 +578,11 @@ async function checkLlm() {
       dot.className = 'llm-dot ready';
       badge.textContent = 'LLM';
       $('llmStartBtn').classList.add('hidden');
-      // Populate model list
       sel.innerHTML = '<option value="">— выбрать модель —</option>' +
         d.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
 
-      // Recommend mistral-nemo if available
-      const best = d.models.find(m => m.includes('mistral-nemo') || m.includes('mistral-small'));
+      const best = d.models.find(m => m.includes('qwen2.5')) ||
+                   d.models.find(m => m.includes('mistral-nemo'));
       if (best) { sel.value = best; onLlmModelChange(); }
 
       info.textContent = `${d.models.length} модел(ей) доступно`;
@@ -572,15 +590,15 @@ async function checkLlm() {
       dot.className = 'llm-dot';
       badge.textContent = 'LLM';
       $('llmStartBtn').classList.remove('hidden');
-      info.innerHTML = 'Ollama не запущен. <a href="https://ollama.com" target="_blank" style="color:#a78bfa">Установить</a> → <code>ollama pull mistral-nemo</code>';
+      info.innerHTML = 'Ollama не запущен. <a href="https://ollama.com" target="_blank" style="color:#a78bfa">Установить</a>';
     }
-  } catch { /* ignore */ }
+  } catch {}
 }
 
 async function startOllama() {
   const btn = $('llmStartBtn');
   btn.disabled = true;
-  btn.textContent = '⏳ Запуск…';
+  btn.textContent = 'Запуск...';
   try {
     const d = await apiFetch('/api/llm-start', {method: 'POST'});
     if (d.available) {
@@ -589,12 +607,12 @@ async function startOllama() {
     } else {
       toast(d.error || 'Ollama не удалось запустить', 'err');
       btn.disabled = false;
-      btn.textContent = '▶ Запустить Ollama';
+      btn.textContent = 'Запустить Ollama';
     }
   } catch(ex) {
     toast('Ошибка: ' + ex.message, 'err');
     btn.disabled = false;
-    btn.textContent = '▶ Запустить Ollama';
+    btn.textContent = 'Запустить Ollama';
   }
 }
 
@@ -622,7 +640,7 @@ function renderSessions() {
     </div>`).join('');
 }
 
-// ── Custom modal ──────────────────────────────────────────────────────────────
+// ── Modal ──────────────────────────────────────────────────────────────────
 function showModal({title, sub='', placeholder='', defaultVal='', okLabel='OK', okDanger=false, hasInput=true}) {
   return new Promise(resolve => {
     S._modalResolve = resolve;
@@ -650,7 +668,7 @@ function closeModal(confirmed) {
 
 async function newSession() {
   const today = new Date().toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'});
-  const name = await showModal({title:'Новая сессия',placeholder:'Название…',defaultVal:'Сессия '+today,okLabel:'Создать'});
+  const name = await showModal({title:'Новая сессия',placeholder:'Название...',defaultVal:'Сессия '+today,okLabel:'Создать'});
   if (!name) return;
   const s = await apiFetch('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
   await loadSessions();
@@ -660,13 +678,15 @@ async function newSession() {
 
 async function selectSession(id) {
   S.active=S.sessions.find(s=>s.id===id)||null;
-  S.files=[];S.mappings=[];S.lastSid=null;
+  S.files=[];S.mappings=[];S.lastSid=null;S.needsReprocess=false;
   renderSessions();
   $('emptyState').classList.add('hidden');
   $('workArea').classList.remove('hidden');
   $('dlAllBtn').classList.add('hidden');
+  $('reprocessBtn').classList.add('hidden');
   renderFileList();updateProcBtn();
   await loadMappings();
+  updateAddManualBtn();
 }
 
 async function delSession(e, id) {
@@ -683,19 +703,17 @@ async function delSession(e, id) {
 // ─── Mode ─────────────────────────────────────────────────────────────────────
 const DESCS = {
   anonymize:'Персональные данные заменяются токенами. Маппинг сохраняется в сессии.',
-  deanonymize:'Токены заменяются исходными значениями из маппинга текущей сессии. PDF → DOCX.'
+  deanonymize:'Токены заменяются исходными значениями из маппинга текущей сессии.'
 };
 function setMode(m){
   S.mode=m;S.files=[];renderFileList();updateProcBtn();
   $('mAnon').className='mode-btn'+(m==='anonymize'?' active':'');
   $('mDean').className='mode-btn'+(m==='deanonymize'?' active':'');
   $('modeDesc').textContent=DESCS[m];
-  // Processing mode controls only make sense for anonymization
   const isAnon = m === 'anonymize';
   $('procModeRow').style.display = isAnon ? 'flex' : 'none';
-  // Re-apply procMode visibility
   if (isAnon) { setProcMode(S.procMode); }
-  else { $('llmPanel').classList.add('hidden'); $('llmChat').classList.add('hidden'); }
+  else { $('llmPanel').classList.add('hidden'); }
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
@@ -730,7 +748,7 @@ function renderFileList(){
         <div class="file-meta">
           ${item.status==='ok'
             ? `Объектов: ${item.entities} → <span style="color:var(--text2)">${esc(item.output||'')}</span>`
-            : item.status==='loading' ? 'Обработка…'
+            : item.status==='loading' ? 'Обработка...'
             : fmtSize(f.size)}
         </div>
         ${item.status==='err'?`<div class="file-err">${esc(item.error||'Ошибка')}</div>`:''}
@@ -755,11 +773,11 @@ async function pollLlmProgress() {
     const d = await apiFetch('/api/llm-progress');
     if (d.active) {
       const msg = d.total > 0
-        ? `LLM: фрагмент ${d.chunk} из ${d.total}…`
-        : 'LLM: анализ…';
+        ? `LLM: фрагмент ${d.chunk} из ${d.total}...`
+        : 'LLM: анализ...';
       $('procTxt').textContent = msg;
     }
-  } catch { /* ignore — server might be busy */ }
+  } catch {}
 }
 
 async function doProcess(){
@@ -770,18 +788,14 @@ async function doProcess(){
   renderFileList();
   $('procBtn').disabled=true;
   $('procIco').outerHTML='<div class="spinner" id="procIco"></div>';
-  $('procTxt').textContent='Обработка…';
+  $('procTxt').textContent='Обработка...';
 
-  // Derive use_llm / use_regex_ner from the 3-way procMode toggle.
-  // Deanonymization always uses regex+NER logic path (no LLM).
   const pm = S.procMode;
-  const useLlm      = S.mode === 'anonymize'
-    && (pm === 'llm_only' || pm === 'regex_ner_llm')
+  const useSpacy = (pm === 'regex_spacy' || pm === 'regex_spacy_llm');
+  const useLlm   = S.mode === 'anonymize'
+    && (pm === 'llm_only' || pm === 'regex_spacy_llm')
     && !!$('llmModelSelect').value;
-  const useRegexNer = S.mode !== 'anonymize'
-    || (pm === 'regex_ner' || pm === 'regex_ner_llm');
 
-  // Poll LLM progress every 2 s while the request is in flight
   if (useLlm) {
     _llmPollTimer = setInterval(pollLlmProgress, 2000);
   }
@@ -789,8 +803,8 @@ async function doProcess(){
   const fd=new FormData();
   fd.append('mode',S.mode);
   fd.append('session_id',S.active.id);
+  fd.append('use_spacy', useSpacy ? 'true' : 'false');
   fd.append('use_llm', useLlm ? 'true' : 'false');
-  fd.append('use_regex_ner', useRegexNer ? 'true' : 'false');
   pending.forEach(x=>fd.append('files',x.file));
 
   try{
@@ -806,6 +820,7 @@ async function doProcess(){
     if(ok>1){$('dlAllBtn').href=`/api/download-all/${d.session_id}`;$('dlAllBtn').classList.remove('hidden');}
     toast(`Обработано: ${ok} из ${tot}`,ok===tot?'ok':'err');
     await loadSessions();
+    updateAddManualBtn();
   }catch(ex){
     toast('Ошибка: '+ex.message,'err');
     S.files.forEach(x=>{if(x.status==='loading')x.status=null;});
@@ -818,15 +833,56 @@ async function doProcess(){
   }
 }
 
+// ─── Reprocess ───────────────────────────────────────────────────────────────
+async function doReprocess() {
+  if (!S.active) return;
+  const btn = $('reprocessBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Переобработка...';
+  try {
+    const resp = await fetch(`/api/sessions/${S.active.id}/reprocess`, {method:'POST'});
+    if (resp.status === 404) {
+      btn.classList.add('hidden');
+      return;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    const ok = d.results?.filter(r => r.status === 'ok').length || 0;
+    if (ok > 0) {
+      toast(`Переобработано: ${ok} файл(ов)`, 'ok');
+      if (ok > 1) { $('dlAllBtn').href=`/api/download-all/${S.active.id}`; $('dlAllBtn').classList.remove('hidden'); }
+    }
+    S.needsReprocess = false;
+    btn.classList.add('hidden');
+    await loadMappings();
+  } catch(ex) {
+    toast('Ошибка переобработки: ' + ex.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Переобработать';
+  }
+}
+
+function showReprocessBtn() {
+  S.needsReprocess = true;
+  $('reprocessBtn').classList.remove('hidden');
+}
+
 // ─── Mappings ─────────────────────────────────────────────────────────────────
 async function loadMappings(){
   if(!S.active)return;
   S.mappings=await apiFetch(`/api/sessions/${S.active.id}/mappings`);
-  renderMap();updateMapCount();
+  renderMap();updateMapCount();updateAddManualBtn();
+}
+
+function updateAddManualBtn() {
+  const btn = $('btnAddManual');
+  if (!btn) return;
+  btn.disabled = !(S.active && S.mappings && S.mappings.length > 0);
 }
 function renderMap(search='',typeF=''){
   let data=S.mappings;
-  if(search){const q=search.toLowerCase();data=data.filter(m=>m.token.toLowerCase().includes(q)||m.canonical_form.toLowerCase().includes(q));}
+  if(search){const q=search.toLowerCase();data=data.filter(m=>m.token.toLowerCase().includes(q)||(m.original_form||'').toLowerCase().includes(q)||(m.canonical_form||'').toLowerCase().includes(q));}
   if(typeF)data=data.filter(m=>m.token.startsWith(typeF+'_'));
   const tbody=$('mapTbody');
   if(!data.length){tbody.innerHTML=`<tr><td colspan="5" class="tbl-empty">${S.mappings.length?'Ничего не найдено':'Маппинг пуст'}</td></tr>`;return;}
@@ -834,50 +890,91 @@ function renderMap(search='',typeF=''){
     const p=m.token.split('_')[0];
     return `<tr>
       <td class="td-token">${esc(m.token)}</td>
-      <td>${esc(m.canonical_form)}</td>
+      <td>${esc(m.original_form||'')}</td>
+      <td>${esc(m.canonical_form||'')}</td>
       <td><span class="badge t-${p}">${tokenLabel(p)}</span></td>
-      <td style="color:var(--text3)">${fmtDate(m.created_at)}</td>
       <td><div class="td-actions">
-        <button class="btn-td btn-td-edit" onclick="editMapping('${esc(m.token)}','${esc(m.canonical_form)}','${esc(m.entity_type||'')}')">✏️</button>
+        <button class="btn-td btn-td-edit" onclick="editMapping('${esc(m.token)}','${esc(m.original_form||'')}','${esc(m.entity_type||'')}')">✏️</button>
         <button class="btn-td btn-td-del"  onclick="deleteMapping('${esc(m.token)}')">🗑️</button>
       </div></td>
     </tr>`;
   }).join('');
 }
 function filterMap(){renderMap($('mapSearch').value,$('mapType').value);}
-function updateMapCount(){$('mapCount').textContent=S.mappings.length?`${S.mappings.length} записей`:'';;}
+function updateMapCount(){$('mapCount').textContent=S.mappings.length?`${S.mappings.length} записей`:'';}
+
+// ─── Edit / Add mapping modal ────────────────────────────────────────────────
+function openEditMapModal({title, token=null, original='', canonical='', etype='ФИО'}) {
+  return new Promise(resolve => {
+    S._editMapResolve = resolve;
+    $('editMapTitle').textContent = title;
+    $('editMapOriginal').value  = original;
+    $('editMapCanonical').value = canonical;
+    $('editMapType').value      = etype;
+    const tokenInfo = $('editMapTokenInfo');
+    if (token) {
+      $('editMapTokenVal').textContent = token;
+      tokenInfo.classList.remove('hidden');
+    } else {
+      tokenInfo.classList.add('hidden');
+    }
+    $('editMapOverlay').classList.remove('hidden');
+    setTimeout(() => $('editMapOriginal').focus(), 50);
+    $('editMapOriginal').onkeydown = e => { if(e.key==='Escape') closeEditMapModal(false); };
+  });
+}
+
+function closeEditMapModal(confirmed) {
+  $('editMapOverlay').classList.add('hidden');
+  if (S._editMapResolve) {
+    const val = confirmed ? {
+      original_form:  $('editMapOriginal').value.trim(),
+      canonical_form: $('editMapCanonical').value.trim(),
+      entity_type:    $('editMapType').value,
+    } : null;
+    S._editMapResolve(val);
+    S._editMapResolve = null;
+  }
+}
 
 // Mapping CRUD
 async function addMappingManual() {
   if (!S.active) return;
-  const canonical = await showModal({title:'Добавить значение',placeholder:'Иванов Иван Иванович',okLabel:'Далее'});
-  if (!canonical) return;
-  const types = ['ФИО','ЮЛ','ИНН','ОГРН','КПП','РС','КС','БИК','ПАСПОРТ','ТЕЛЕФОН','EMAIL','АДРЕС','ДАТАРОЖД','СНИЛС','SWIFT'];
-  const etype = await showModal({title:'Тип сущности',placeholder:types.join(' | '),defaultVal:'ЮЛ',okLabel:'Добавить'});
-  if (!etype) return;
+  const data = await openEditMapModal({title:'Добавить запись'});
+  if (!data || !data.entity_type) return;
+  if (!data.original_form && !data.canonical_form) { toast('Заполните хотя бы одно поле','err'); return; }
   try {
     const r = await apiFetch(`/api/sessions/${S.active.id}/mappings`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({canonical_form: canonical, entity_type: etype})
+      body: JSON.stringify(data)
     });
     toast(`Добавлено: ${r.token}`, 'ok');
     await loadMappings();
+    await doReprocess();
   } catch(ex) { toast('Ошибка: '+ex.message,'err'); }
 }
 
-async function editMapping(token, canonical, entityType) {
+async function editMapping(token, originalForm, entityType) {
   if (!S.active) return;
-  const newVal = await showModal({title:`Изменить значение для ${token}`,defaultVal:canonical,placeholder:'Новое значение',okLabel:'Сохранить'});
-  if (!newVal || newVal === canonical) return;
+  const m = S.mappings.find(x => x.token === token);
+  const data = await openEditMapModal({
+    title: `Редактировать запись`,
+    token,
+    original:  m?.original_form  || originalForm,
+    canonical: m?.canonical_form || originalForm,
+    etype:     m?.entity_type    || entityType,
+  });
+  if (!data) return;
   try {
-    await apiFetch(`/api/sessions/${S.active.id}/mappings/${encodeURIComponent(token)}`, {
+    const r = await apiFetch(`/api/sessions/${S.active.id}/mappings/${encodeURIComponent(token)}`, {
       method:'PATCH',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({canonical_form: newVal})
+      body: JSON.stringify(data)
     });
-    toast(`Обновлено: ${token}`, 'ok');
+    toast(`Обновлено: ${r.new_token || token}`, 'ok');
     await loadMappings();
+    await doReprocess();
   } catch(ex) { toast('Ошибка: '+ex.message,'err'); }
 }
 
@@ -889,56 +986,18 @@ async function deleteMapping(token) {
     await apiFetch(`/api/sessions/${S.active.id}/mappings/${encodeURIComponent(token)}`, {method:'DELETE'});
     toast(`Удалено: ${token}`, 'info');
     await loadMappings();
+    await doReprocess();
   } catch(ex) { toast('Ошибка: '+ex.message,'err'); }
-}
-
-// LLM request field
-async function sendLlmRequest() {
-  if (!S.active) return;
-  const inp = $('llmChatInp');
-  const msg = inp.value.trim();
-  if (!msg) return;
-
-  const btn = $('llmChatBtn');
-  const resp = $('llmChatResp');
-  btn.disabled = true;
-  resp.className = 'llm-chat-resp';
-  resp.textContent = '⏳ Обработка…';
-  resp.classList.remove('hidden');
-
-  try {
-    const d = await apiFetch(`/api/sessions/${S.active.id}/llm-request`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({message: msg})
-    });
-    if (d.ok) {
-      inp.value = '';
-      resp.className = 'llm-chat-resp ok';
-      const actions = {add:'Добавлено',delete:'Удалено',update:'Обновлено'};
-      resp.textContent = `✅ ${actions[d.action]||'Выполнено'}${d.token?' '+d.token:''}`;
-      if (d.mappings) { S.mappings = d.mappings; renderMap(); updateMapCount(); }
-    } else {
-      resp.className = 'llm-chat-resp err';
-      resp.textContent = '❌ ' + (d.message || 'Не удалось обработать запрос. Переформулируйте.');
-    }
-  } catch(ex) {
-    resp.className = 'llm-chat-resp err';
-    resp.textContent = '❌ Ошибка: ' + ex.message;
-  } finally {
-    btn.disabled = false;
-  }
 }
 function toggleMap(){S.mapOpen=!S.mapOpen;$('mapBody').style.display=S.mapOpen?'':'none';$('mapToggle').className='map-toggle'+(S.mapOpen?' open':'');}
 
 // ─── Shutdown ─────────────────────────────────────────────────────────────────
 async function doShutdown(){
-  const ok=await showModal({title:'Завершить приложение?',sub:'Сервер будет остановлен, браузерная вкладка закроется автоматически.',hasInput:false,okLabel:'Завершить',okDanger:true});
+  const ok=await showModal({title:'Завершить приложение?',sub:'Сервер будет остановлен.',hasInput:false,okLabel:'Завершить',okDanger:true});
   if(!ok)return;
   try{await apiFetch('/api/shutdown',{method:'POST'});}catch{}
-  // Give server 0.5s to shut down, then close tab
   setTimeout(() => { try { window.close(); } catch(e) {} }, 600);
-  document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#07091a;color:#4d6080;font-family:sans-serif"><div style="font-size:52px;margin-bottom:14px">👋</div><p style="font-size:16px;color:#8fa0be">Приложение завершено</p><p style="font-size:12px;margin-top:6px">Вкладку можно закрыть вручную</p></div>`;
+  document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#07091a;color:#4d6080;font-family:sans-serif"><div style="font-size:52px;margin-bottom:14px">👋</div><p style="font-size:16px;color:#8fa0be">Приложение завершено</p><p style="font-size:12px;margin-top:6px">Вкладку можно закрыть</p></div>`;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

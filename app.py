@@ -13,14 +13,14 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "2.0.0"
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
 # ── Path resolution (works both in development and PyInstaller bundle) ────────
 if getattr(sys, 'frozen', False):
-    BUNDLE_DIR = Path(sys._MEIPASS)        # extracted resources
-    DATA_DIR   = Path(sys.executable).parent  # writable next to .exe/.app
+    BUNDLE_DIR = Path(sys._MEIPASS)
+    DATA_DIR   = Path(sys.executable).parent
 else:
     BUNDLE_DIR = Path(__file__).parent
     DATA_DIR   = Path(__file__).parent
@@ -41,7 +41,7 @@ start_ner_loading()
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=str(STATIC_DIR))
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024   # 100 MB
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 
 # ── Static files & SPA ───────────────────────────────────────────────────────
@@ -61,39 +61,31 @@ def status():
 
 @app.route('/api/debug')
 def debug():
-    """Full diagnostics — open in browser to see what's happening."""
-    import sys, platform
+    import platform
     from core.anonymizer import get_ner_status
 
     ner = get_ner_status()
 
-    # Try importing natasha directly to see the real error
-    natasha_ok  = False
-    natasha_err = ''
-    numpy_ver   = 'unknown'
+    spacy_ok  = False
+    spacy_ver = 'unknown'
+    model_installed = False
     try:
-        import numpy
-        numpy_ver = numpy.__version__
+        import spacy
+        spacy_ver = spacy.__version__
+        spacy_ok = True
+        model_installed = spacy.util.is_package('ru_core_news_lg')
     except Exception as e:
-        numpy_ver = f'IMPORT ERROR: {e}'
-
-    try:
-        from natasha import Segmenter
-        natasha_ok = True
-    except Exception as e:
-        import traceback
-        natasha_err = traceback.format_exc()
+        spacy_ver = f'IMPORT ERROR: {e}'
 
     info = {
         'python_version':  sys.version,
         'platform':        platform.platform(),
         'executable':      sys.executable,
-        'numpy_version':   numpy_ver,
-        'natasha_import':  natasha_ok,
-        'natasha_error':   natasha_err,
+        'spacy_version':   spacy_ver,
+        'spacy_import':    spacy_ok,
+        'model_installed': model_installed,
         'ner_status':      ner,
     }
-    # Return as plain text for readability
     lines = [f'{k}: {v}' for k, v in info.items()]
     return '<pre>' + '\n\n'.join(lines) + '</pre>'
 
@@ -124,7 +116,8 @@ def llm_start():
     ok = try_start_ollama()
     if ok:
         return jsonify(check_ollama())
-    return jsonify({'available': False, 'models': [], 'model': None, 'error': 'Ollama не найден или не удалось запустить'}), 200
+    return jsonify({'available': False, 'models': [], 'model': None,
+                    'error': 'Ollama не найден или не удалось запустить'}), 200
 
 
 @app.route('/api/llm-model', methods=['POST'])
@@ -143,7 +136,7 @@ def list_sessions():
 
 
 @app.route('/api/sessions', methods=['POST'])
-def create_session():
+def create_session_route():
     from core.db import create_session
     import uuid
     data = request.get_json(force=True, silent=True) or {}
@@ -154,8 +147,8 @@ def create_session():
 
 @app.route('/api/sessions/<sid>', methods=['DELETE'])
 def delete_session(sid):
-    from core.db import delete_session
-    delete_session(DB_PATH, sid)
+    from core.db import delete_session as db_delete_session
+    db_delete_session(DB_PATH, sid)
     session_dir = UPLOADS_DIR / sid
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
@@ -170,88 +163,100 @@ def session_mappings(sid):
 
 @app.route('/api/sessions/<sid>/mappings/<token>', methods=['DELETE'])
 def delete_mapping_route(sid, token):
-    from core.db import delete_mapping
+    from core.db import delete_mapping, get_session_mappings, add_exclusion
+    mappings = get_session_mappings(DB_PATH, sid)
+    m = next((x for x in mappings if x['token'] == token), None)
+    if m:
+        add_exclusion(DB_PATH, sid, m['original_form'], m['entity_type'])
     delete_mapping(DB_PATH, sid, token)
     return jsonify({'ok': True})
 
 
 @app.route('/api/sessions/<sid>/mappings/<token>', methods=['PATCH'])
 def update_mapping_route(sid, token):
-    from core.db import update_mapping
+    from core.db import get_session_mappings, delete_mapping, add_exclusion, get_or_create_token
     data = request.get_json(force=True, silent=True) or {}
-    update_mapping(DB_PATH, sid, token, data)
-    return jsonify({'ok': True})
+    mappings = get_session_mappings(DB_PATH, sid)
+    old = next((x for x in mappings if x['token'] == token), None)
+    if not old:
+        return jsonify({'error': 'Token not found'}), 404
+    new_original  = (data.get('original_form',  old['original_form'])).strip()
+    new_canonical = (data.get('canonical_form', old['canonical_form'])).strip()
+    new_type      = (data.get('entity_type',    old['entity_type'])).strip()
+    if new_original != old['original_form']:
+        add_exclusion(DB_PATH, sid, old['original_form'], old['entity_type'])
+    delete_mapping(DB_PATH, sid, token)
+    new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type)
+    return jsonify({'ok': True, 'new_token': new_token})
 
 
 @app.route('/api/sessions/<sid>/mappings', methods=['POST'])
 def add_mapping_route(sid):
-    """Manually add a new mapping (from user text field / LLM parse)."""
-    from core.db import get_or_create_token, get_session_mappings
+    from core.db import get_or_create_token
     data = request.get_json(force=True, silent=True) or {}
-    canonical = (data.get('canonical_form') or '').strip()
-    entity_type = (data.get('entity_type') or '').strip()
-    if not canonical or not entity_type:
-        return jsonify({'error': 'canonical_form и entity_type обязательны'}), 400
-    token = get_or_create_token(DB_PATH, sid, canonical, entity_type)
-    return jsonify({'token': token, 'canonical_form': canonical, 'entity_type': entity_type}), 201
+    original    = (data.get('original_form')  or '').strip()
+    canonical   = (data.get('canonical_form') or '').strip()
+    entity_type = (data.get('entity_type')    or '').strip()
+    if not entity_type:
+        return jsonify({'error': 'entity_type обязателен'}), 400
+    if not canonical:
+        canonical = original
+    if not original:
+        original = canonical
+    if not original:
+        return jsonify({'error': 'original_form или canonical_form обязательны'}), 400
+    token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type)
+    return jsonify({'token': token, 'original_form': original,
+                    'canonical_form': canonical, 'entity_type': entity_type}), 201
 
 
-@app.route('/api/sessions/<sid>/llm-request', methods=['POST'])
-def llm_mapping_request(sid):
-    """
-    Parse a free-form user request about DB modifications via LLM.
-    e.g. "Добавь компанию Daimler AG", "Удали FIO_3", "Исправь INN_1 на 7707083893"
-    """
-    from core.llm import llm_parse_user_request
-    from core.db import (get_session_mappings, get_or_create_token,
-                         delete_mapping, update_mapping)
+
+
+# ── Reprocess after manual edits ──────────────────────────────────────────────
+@app.route('/api/sessions/<sid>/reprocess', methods=['POST'])
+def reprocess_session(sid):
+    from core.handlers import process_uploaded_file
+
+    session_dir = UPLOADS_DIR / sid
+    input_dir   = session_dir / 'input'
+    output_dir  = session_dir / 'output'
+
+    if not input_dir.exists():
+        return jsonify({'error': 'Оригинальные файлы не найдены'}), 404
+
+    results = []
+    for input_file in input_dir.iterdir():
+        try:
+            r = process_uploaded_file(
+                input_path=input_file,
+                output_dir=output_dir,
+                session_id=sid,
+                db_path=DB_PATH,
+                mode='anonymize',
+            )
+            results.append({'filename': input_file.name, 'status': 'ok'})
+        except Exception as ex:
+            results.append({'filename': input_file.name, 'status': 'error', 'error': str(ex)})
+
+    return jsonify({'results': results})
+
+
+# ── User patterns ─────────────────────────────────────────────────────────────
+@app.route('/api/patterns', methods=['GET', 'POST'])
+def patterns():
+    from core.db import get_top_patterns, save_user_pattern
+    if request.method == 'GET':
+        return jsonify(get_top_patterns(DB_PATH))
     data = request.get_json(force=True, silent=True) or {}
-    message = (data.get('message') or '').strip()
-    if not message:
-        return jsonify({'error': 'Сообщение не передано'}), 400
+    save_user_pattern(DB_PATH, data.get('pattern', ''), data.get('entity_type', 'FIO'))
+    return jsonify({'ok': True}), 201
 
-    mappings = get_session_mappings(DB_PATH, sid)
-    result = llm_parse_user_request(message, sid, DB_PATH, mappings)
 
-    if 'error' in result:
-        return jsonify({'ok': False, 'message': result['error']}), 200
-
-    action = result.get('action')
-    try:
-        if action == 'add':
-            canonical = (result.get('text') or result.get('canonical_form') or '').strip()
-            entity_type = (result.get('type') or result.get('entity_type') or 'ЮЛ').strip()
-            if not canonical:
-                return jsonify({'ok': False, 'message': 'LLM не распознал значение'}), 200
-            token = get_or_create_token(DB_PATH, sid, canonical, entity_type)
-            return jsonify({'ok': True, 'action': 'add', 'token': token,
-                            'canonical_form': canonical, 'entity_type': entity_type,
-                            'mappings': get_session_mappings(DB_PATH, sid)})
-
-        elif action == 'delete':
-            token = (result.get('token') or '').strip()
-            if not token:
-                return jsonify({'ok': False, 'message': 'LLM не распознал токен для удаления'}), 200
-            delete_mapping(DB_PATH, sid, token)
-            return jsonify({'ok': True, 'action': 'delete', 'token': token,
-                            'mappings': get_session_mappings(DB_PATH, sid)})
-
-        elif action == 'update':
-            token = (result.get('token') or '').strip()
-            canonical = (result.get('canonical_form') or result.get('text') or '').strip()
-            entity_type = (result.get('type') or result.get('entity_type') or '').strip()
-            if not token:
-                return jsonify({'ok': False, 'message': 'LLM не распознал токен'}), 200
-            update_mapping(DB_PATH, sid, token,
-                           {'canonical_form': canonical, 'entity_type': entity_type})
-            return jsonify({'ok': True, 'action': 'update', 'token': token,
-                            'mappings': get_session_mappings(DB_PATH, sid)})
-
-        else:
-            return jsonify({'ok': False, 'message': f'Неизвестное действие: {action}'}), 200
-
-    except Exception as ex:
-        return jsonify({'ok': False, 'message': str(ex)}), 200
+@app.route('/api/patterns/<int:pid>', methods=['DELETE'])
+def delete_pattern(pid):
+    from core.db import delete_user_pattern
+    delete_user_pattern(DB_PATH, pid)
+    return jsonify({'ok': True})
 
 
 # ── Process ───────────────────────────────────────────────────────────────────
@@ -260,10 +265,10 @@ def process():
     from core.handlers import process_uploaded_file
     from core.db       import get_session_mappings
 
-    mode          = request.form.get('mode', 'anonymize')
-    sid           = request.form.get('session_id', '').strip()
-    use_llm       = request.form.get('use_llm',       'false').lower() == 'true'
-    use_regex_ner = request.form.get('use_regex_ner', 'true' ).lower() != 'false'
+    mode       = request.form.get('mode', 'anonymize')
+    sid        = request.form.get('session_id', '').strip()
+    use_spacy  = request.form.get('use_spacy',  'true').lower() != 'false'
+    use_llm    = request.form.get('use_llm',    'false').lower() == 'true'
     if not sid:
         return jsonify({'error': 'session_id не передан'}), 400
 
@@ -290,14 +295,10 @@ def process():
                 session_id=sid,
                 db_path=DB_PATH,
                 mode=mode,
+                use_spacy=use_spacy,
                 use_llm=use_llm,
-                use_regex_ner=use_regex_ner,
             )
-            # PDF deanon produces .txt — adjust reported filename
             out_name = r['output_filename']
-            if r.get('_pdf_deanon_txt'):
-                out_name = out_name.rsplit('.', 1)[0] + '.txt'
-
             results.append({'filename': f.filename,
                              'output':   out_name,
                              'status':   'ok',
@@ -364,6 +365,6 @@ def _open_browser():
 if __name__ == '__main__':
     t = threading.Thread(target=_open_browser, daemon=True)
     t.start()
-    print('🔐  Anonymizer запущен → http://127.0.0.1:5000')
-    print('    Для остановки нажмите Ctrl+C или используйте кнопку «Завершить» в интерфейсе.')
+    print('Anonymizer v' + APP_VERSION)
+    print('http://127.0.0.1:5000')
     app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
