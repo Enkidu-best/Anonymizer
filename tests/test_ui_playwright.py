@@ -55,7 +55,7 @@ def _wait_for(url: str, timeout: float = 30) -> bool:
     return False
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='function')
 def server(tmp_path_factory):
     """Start a fresh app.py instance on a free port with an isolated DB/uploads."""
     work = tmp_path_factory.mktemp('app')
@@ -142,12 +142,25 @@ def _make_session(page, name: str):
         const d = await r.json();
         return d.id;
     }''', name)
-    # Refresh the session list and await selection (selectSession is async)
-    page.evaluate('async () => { await window.loadSessions(); }')
-    page.evaluate('async (id) => { await window.selectSession(id); }', sid)
+    # Refresh the session list, then synchronously check (no race).
+    # Note: `S` is declared with `const` so it isn't on `window`. Reference it
+    # directly inside the page context.
+    state = page.evaluate(
+        '''async (id) => {
+            await loadSessions();
+            const found = (S.sessions || []).some(s => s.id === id);
+            return { found, count: (S.sessions || []).length };
+        }''',
+        sid,
+    )
+    assert state.get('found'), f'Session not in list after loadSessions: {state}'
+
+    # Now select it (awaited) and wait for the UI to settle
+    page.evaluate('async (id) => { await selectSession(id); }', sid)
     page.wait_for_selector('#workArea:not(.hidden)', timeout=20000)
     page.wait_for_selector('#mAnon', state='visible', timeout=20000)
-    page.wait_for_function('window.S?.active?.id', timeout=20000)
+    active = page.evaluate('S.active?.id')
+    assert active == sid, f'S.active.id != {sid}, got {active!r}'
     return sid
 
 
@@ -260,7 +273,7 @@ def test_delete_file_via_x_button_removes_from_session(page, server, tmp_path):
 
     # Server should also report no files
     files = page.evaluate('''async () => {
-        const id = window.S?.active?.id;
+        const id = S?.active?.id;
         const r = await fetch(`/api/sessions/${id}/files`);
         return await r.json();
     }''')
@@ -280,7 +293,7 @@ def test_deanon_returns_canonical_form_after_edit(page, server, tmp_path):
 
     # 2) Use the API (same path the UI uses for the edit modal) to change canonical
     res = page.evaluate('''async () => {
-        const id = window.S?.active?.id;
+        const id = S?.active?.id;
         const mappings = await (await fetch(`/api/sessions/${id}/mappings`)).json();
         const url = mappings.find(m => m.entity_type === "URL");
         if (!url) return {error: "no URL mapping", sid: id, all: mappings};
@@ -295,7 +308,7 @@ def test_deanon_returns_canonical_form_after_edit(page, server, tmp_path):
 
     # 3) Verify get_reverse_mappings returns the override via session_files+download
     rev = page.evaluate('''async () => {
-        const id = window.S?.active?.id;
+        const id = S?.active?.id;
         const r = await fetch(`/api/sessions/${id}/mappings`);
         return await r.json();
     }''')
@@ -311,7 +324,7 @@ def test_known_entities_persist_across_sessions(page, server):
     # Session A: add a known phone via the API as the UI's "+ Добавить вручную" does
     _make_session(page, 'UI-known-A')
     page.evaluate('''async () => {
-        const id = window.S?.active?.id;
+        const id = S?.active?.id;
         await fetch(`/api/sessions/${id}/mappings`, {
             method: "POST",
             headers: {"Content-Type": "application/json"},
@@ -324,7 +337,7 @@ def test_known_entities_persist_across_sessions(page, server):
     # Use the API to anonymize a text that references the phone — exactly what
     # /api/process does for an uploaded file. Cross-session learning should kick in.
     out = page.evaluate('''async () => {
-        const id = window.S?.active?.id;
+        const id = S?.active?.id;
         const fd = new FormData();
         fd.append("session_id", id);
         fd.append("mode", "anonymize");
