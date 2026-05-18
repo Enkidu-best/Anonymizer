@@ -39,6 +39,13 @@ init_db(DB_PATH)
 from core.anonymizer import start_ner_loading
 start_ner_loading()
 
+# ── Warm Ollama (if available) so first LLM request isn't cold ───────────────
+try:
+    from core.llm import preload_model_async
+    preload_model_async()
+except Exception as _ex:
+    print(f'[LLM] preload skipped: {_ex}')
+
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
@@ -181,7 +188,8 @@ def delete_mapping_route(sid, token):
 
 @app.route('/api/sessions/<sid>/mappings/<token>', methods=['PATCH'])
 def update_mapping_route(sid, token):
-    from core.db import get_session_mappings, delete_mapping, add_exclusion, get_or_create_token
+    from core.db import (get_session_mappings, delete_mapping, add_exclusion,
+                          get_or_create_token, remember_entity)
     data = request.get_json(force=True, silent=True) or {}
     mappings = get_session_mappings(DB_PATH, sid)
     old = next((x for x in mappings if x['token'] == token), None)
@@ -194,12 +202,14 @@ def update_mapping_route(sid, token):
         add_exclusion(DB_PATH, sid, old['original_form'], old['entity_type'])
     delete_mapping(DB_PATH, sid, token)
     new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type)
+    # User explicitly confirmed this entity — remember globally for future sessions
+    remember_entity(DB_PATH, new_original, new_type)
     return jsonify({'ok': True, 'new_token': new_token})
 
 
 @app.route('/api/sessions/<sid>/mappings', methods=['POST'])
 def add_mapping_route(sid):
-    from core.db import get_or_create_token
+    from core.db import get_or_create_token, remember_entity
     data = request.get_json(force=True, silent=True) or {}
     original    = (data.get('original_form')  or '').strip()
     canonical   = (data.get('canonical_form') or '').strip()
@@ -213,6 +223,8 @@ def add_mapping_route(sid):
     if not original:
         return jsonify({'error': 'original_form или canonical_form обязательны'}), 400
     token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type)
+    # Manually added → strong signal this is real PII. Cross-session learn.
+    remember_entity(DB_PATH, original, entity_type)
     return jsonify({'token': token, 'original_form': original,
                     'canonical_form': canonical, 'entity_type': entity_type}), 201
 
@@ -339,6 +351,39 @@ def session_files(sid):
             except OSError:
                 pass
     return jsonify({'files': items})
+
+
+@app.route('/api/sessions/<sid>/files/<path:filename>', methods=['DELETE'])
+def delete_session_file(sid, filename):
+    """Remove a single output file from the session. Also removes the matching
+    input source if present (input files share the original stem)."""
+    # Prevent path traversal
+    if '..' in filename or '/' in filename or '\\' in filename:
+        return jsonify({'error': 'invalid filename'}), 400
+    out_dir = UPLOADS_DIR / sid / 'output'
+    in_dir  = UPLOADS_DIR / sid / 'input'
+    target = out_dir / filename
+    if not target.exists():
+        return jsonify({'error': 'file not found'}), 404
+    try:
+        target.unlink()
+    except OSError as ex:
+        return jsonify({'error': str(ex)}), 500
+    # Best-effort: also remove the input file with matching stem
+    stem = filename
+    for pfx in ('anonymized_', 'deanonymized_', 'anon_', 'deanon_'):
+        if stem.lower().startswith(pfx):
+            stem = stem[len(pfx):]
+            break
+    if in_dir.exists():
+        for fp in in_dir.iterdir():
+            if fp.name == stem:
+                try:
+                    fp.unlink()
+                except OSError:
+                    pass
+                break
+    return jsonify({'ok': True})
 
 
 # ── Download single file ──────────────────────────────────────────────────────

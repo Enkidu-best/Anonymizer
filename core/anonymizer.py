@@ -85,13 +85,21 @@ def _p(pattern):
     return re.compile(pattern, re.IGNORECASE | re.UNICODE)
 
 
-TOKEN_INNER_RE = re.compile(
-    r'\[(?:FIO|YUL|INN|OGRN|KPP|RS|KS|BIK|SNILS|PASSPORT|TEL|EMAIL|SWIFT|ADR|DOB'
-    r'|ДАТАРОЖД|LIC|URL)_\d+\]'
+_TOKEN_PREFIXES = (
+    'FIO', 'YUL', 'INN', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
+    'PASSPORT', 'TEL', 'EMAIL', 'SWIFT', 'ADR', 'DOB', 'LIC', 'URL',
+    'ДАТАРОЖД',
 )
+_TOKEN_PFX_ALT = '|'.join(_TOKEN_PREFIXES)
 
-# Matches a bracketed token anywhere in a string (used to detect partial masks)
-ANY_TOKEN_RE = re.compile(r'\[[A-Z_А-ЯЁ]+_\d+\]')
+TOKEN_INNER_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+\]')
+
+# Full bracketed token (e.g. "[YUL_1]")
+ANY_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+\]')
+
+# Partial token leak: open bracket + known prefix + digit, no closing bracket needed.
+# Catches NER fragments like "АО «[YUL_1" that grabbed only part of a mask.
+PARTIAL_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+')
 
 
 def _wrap(token: str) -> str:
@@ -101,8 +109,9 @@ def _is_bracketed_token(text: str) -> bool:
     return bool(TOKEN_INNER_RE.fullmatch(text.strip()))
 
 def _contains_token(text: str) -> bool:
-    """True if text contains any [TYPE_N] mask — such matches should be skipped."""
-    return bool(ANY_TOKEN_RE.search(text))
+    """True if text contains a full [TYPE_N] mask OR a partial bracket leak
+    like '[YUL_1' that NER may have grabbed mid-token."""
+    return bool(PARTIAL_TOKEN_RE.search(text))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -415,7 +424,8 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
 
 _FIO_VERB_END_RE = re.compile(
     r'(?:ает|яет|ует|вает|зает|жает|щает|тает|нает|'
-    r'ляет|ряет|бает|пает|дает|лает|кает|мает|гает|чает|хает)\s*$',
+    r'ляет|ряет|бает|пает|дает|лает|кает|мает|гает|чает|хает|'
+    r'ован|ёван|ирован|изован)\s*$',
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -425,6 +435,42 @@ _FIO_NON_SURNAME_END_RE = re.compile(
 )
 
 _FIO_TRAIL_RE = re.compile(r'[\s.,;:!?)»"\'—\-]+$', re.UNICODE)
+
+# Russian surname endings (covers common patterns including plural genitive
+# like "Москотельниковых")
+_SURNAME_ENDING_RE = re.compile(
+    r'(?:'
+    r'ов|ев|ёв|ин|ын|кий|ский|цкий|ской|цкой|чкий|ной|ний|'
+    r'ова|ева|ёва|ина|ына|кая|ская|цкая|чкая|ская|ной|ная|няя|'
+    r'ых|их|енко|ёнко|онок|ёнок|чук|юк|ук|ян|ан|швили|дзе|оглу|заде|вич|евич'
+    r')$',
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Common words frequently mis-tagged by spaCy as PER/ORG in Russian business
+# documents. Lower-cased; matched against the lowered single-word entity.
+_STOP_TOKENS = {
+    # generic nouns / job titles
+    'возглавляет','возглавлял','подтвержден','подтверждено','подтверждена','инфраструктура',
+    'риски','риск','заключение','заключения','бенефициары','бенефициар','руководитель',
+    'статус','рейтинг','рейтинги','показатели','рекомендации','прибыль','прибыли',
+    'кредит','ставка','ставки','счет','счёт','счета','счёта','рубль','рублей','рублях',
+    'оглавление','содержание','введение','глава','раздел','параграф','примечание',
+    'договор','договоры','протокол','акт','справка','анализ','отчет','отчёт','устав',
+    'председатель','генеральный','директор','президент','секретарь','собственник',
+    'участник','учредитель','собрание','решение','подпись','одобрение','согласие',
+    'председателя','правления','совета','директоров','владелец','владельцы',
+    'банка','банком','банке','банки','банков','банку','деятельность','деятельности',
+    'гарантии','гарантия','гарантий','обязательства','обязательство',
+    'включен','включена','включено','включены','выполнен','выполнена','выполнено',
+    'регион','региональный','региональная','региональные',
+    'единственный','единственная','единственное','единственные',
+    'надежный','надежная','надежное','надежные','надёжный','надёжная',
+    # geo (we don't anonymize cities/countries here)
+    'москва','санкт-петербург','сыктывкар','россия','рф','московский','московская',
+    # business abbrevs that are NOT companies on their own
+    'огрн','инн','кпп','бик','снилс','рс','кс','ндс','усн','ос','осно','осн','еио',
+}
 
 
 def _validate_fio_regex(text: str) -> bool:
@@ -437,6 +483,179 @@ def _validate_fio_regex(text: str) -> bool:
     if len(words) == 2 and _FIO_NON_SURNAME_END_RE.search(first):
         return False
     return True
+
+
+# ── Strict validators for spaCy outputs ──────────────────────────────────────
+
+_HAS_INITIALS_RE = re.compile(r'[А-ЯЁ]\.\s*[А-ЯЁ]\.', re.UNICODE)
+_HAS_PATRONYMIC_RE = re.compile(
+    r'\b[А-ЯЁ][а-яё]+(?:ович|евич|овна|евна|ична|инична|иничн)\b',
+    re.UNICODE,
+)
+
+
+def _validate_spacy_fio(text: str) -> bool:
+    """Strict FIO check for spaCy outputs. See test_bugs_v23 for examples."""
+    t = text.strip().strip('«»"\'(),.;:—–-')
+    if not t or len(t) < 3 or len(t) > 80:
+        return False
+    if any(ch in t for ch in '()!?[]{}/'):
+        return False
+    if t.count(',') >= 2 or ';' in t:
+        return False
+
+    # If ANY token in the phrase is a known generic noun/verb/header, reject.
+    words = t.split()
+    lower_words = [w.lower().strip('.,') for w in words]
+    if any(lw in _STOP_TOKENS for lw in lower_words):
+        return False
+
+    # First word must start with a capital letter — names always do.
+    if not words[0][:1].isupper():
+        return False
+
+    # Quick wins: initials or patronymic
+    if _HAS_INITIALS_RE.search(t) or _HAS_PATRONYMIC_RE.search(t):
+        return _validate_fio_regex(t)
+
+    # Single word: must look like a surname
+    if len(words) == 1:
+        w = words[0]
+        if _FIO_VERB_END_RE.search(w):
+            return False
+        return bool(_SURNAME_ENDING_RE.search(w))
+
+    if 2 <= len(words) <= 4:
+        if not _validate_fio_regex(t):
+            return False
+        # Every word must start with capital — phrases like "Совета директоров"
+        # have one capitalised + one lower-cased token in source text and would
+        # already fail this check (NER often preserves casing).
+        if not all(w[:1].isupper() for w in words):
+            return False
+        if any(_SURNAME_ENDING_RE.search(w) or _HAS_INITIALS_RE.search(w) for w in words):
+            return True
+        return False
+
+    return False
+
+
+_ORG_QUOTE_RE = re.compile(r'[«"\'“„]', re.UNICODE)
+_OPF_ANY_RE = re.compile(
+    r'\b(?:ООО|ОАО|ЗАО|АО|ПАО|НАО|ОДО|ИП|КФХ|ТСЖ|СНТ|'
+    r'ФГУП|ГУП|МУП|АНО|НП|НКО|ГК|КБ|'
+    r'ФГУ|ФГАУ|ФГБУ|ФГКУ|ФКУ|ГБУ|ГКУ|ОГУ|МКУ|ФГАОУ|'
+    r'общество|общества|организация|товарищество|кооператив|фонд|корпорация|'
+    r'банк|банка|банком|банке)\b',
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _validate_spacy_org(text: str) -> bool:
+    """Strict ORG check. See test_bugs_v23 for the cases that drove these rules."""
+    raw = text.strip()
+    t = raw.strip('«»"\'(),.;:—–-')
+    if not t or len(t) < 2 or len(t) > 80:
+        return False
+    # Sentence-like content
+    if t.count(',') >= 2 or ';' in t or any(ch in t for ch in '!?[]'):
+        return False
+    # Unbalanced parens suggest a captured fragment
+    if t.count('(') != t.count(')'):
+        return False
+
+    low = t.lower()
+    if low in _STOP_TOKENS:
+        return False
+
+    # All-caps ASCII or Cyrillic acronym (АСВ, МИР, VISA) — 2-10 chars
+    if 2 <= len(t) <= 10 and re.fullmatch(r'[A-ZА-ЯЁ0-9]+', t):
+        return True
+
+    # Mixed case brand-style single token (MasterCard, Yandex, etc.)
+    if ' ' not in t and 3 <= len(t) <= 25 and re.fullmatch(r'[A-Za-zА-ЯЁа-яё0-9+\-]+', t):
+        if t[:1].isupper():
+            return True
+
+    words = t.split()
+    if len(words) > 8:
+        return False
+
+    has_quote = bool(_ORG_QUOTE_RE.search(text))
+    has_opf = bool(_OPF_ANY_RE.search(t))
+
+    # Require structural signal: quotes OR explicit OPF mention
+    if not (has_quote or has_opf):
+        return False
+
+    # Strip the OPF marker words — what remains should still look like a name
+    # ("(акционерное общество)" alone has nothing left after stripping OPF).
+    rest = _OPF_ANY_RE.sub(' ', t).strip(' «»"\'(),.;:—–-')
+    if not rest or len(rest) < 2:
+        return False
+    rest_words = rest.split()
+    # For capital-letter check, strip leading punctuation/quotes from each word
+    def _starts_upper(w):
+        s = w.lstrip('«»"\'(.,;:—–-')
+        return bool(s) and s[:1].isupper()
+
+    # Reject if the "name" after OPF is just generic words ("банк", "общество")
+    if all(w.lower().strip('«»"\'(.,;:—–-') in _STOP_TOKENS for w in rest_words):
+        return False
+    # Every word must start with a capital — descriptions like
+    # "надежный региональный банк «домашнего» типа" have all-lowercase
+    # head words and fail here. Real org names like "Северный Народный Банк"
+    # have all words capitalised.
+    if not all(_starts_upper(w) for w in rest_words):
+        return False
+    # Reject when ≥ ⅔ of remaining words are stop tokens (description, not name)
+    bad_remaining = sum(
+        1 for w in rest_words if w.lower().strip('«»"\'(.,;:—–-') in _STOP_TOKENS
+    )
+    if rest_words and bad_remaining * 3 >= len(rest_words) * 2:
+        return False
+
+    return True
+
+
+# ── pymorphy3 lazy loader for FIO normalization ──────────────────────────────
+
+_morph = None
+def _get_morph():
+    global _morph
+    if _morph is not None:
+        return _morph
+    try:
+        import pymorphy3
+        _morph = pymorphy3.MorphAnalyzer()
+    except Exception as ex:
+        print(f'[NER] pymorphy3 unavailable: {ex}')
+        _morph = False
+    return _morph
+
+
+def _normalize_fio(text: str) -> str:
+    """Normalize an FIO string to nominative case word-by-word (pymorphy3).
+    Returns original text on any failure. Pure best-effort."""
+    morph = _get_morph()
+    if not morph:
+        return text
+    try:
+        out = []
+        for w in text.split():
+            # Keep initials like "А." as-is
+            if re.fullmatch(r'[А-ЯЁA-Z]\.', w):
+                out.append(w)
+                continue
+            p = morph.parse(w)[0]
+            try:
+                inflected = p.inflect({'nomn'})
+                out.append(inflected.word.capitalize() if inflected else w)
+            except Exception:
+                out.append(w)
+        return ' '.join(out)
+    except Exception:
+        return text
 
 
 def _apply_regex_pass(text: str, db_path, session_id: str,
@@ -529,34 +748,54 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
         return text, {}
 
     replacements = {}
+    rejected = {'short': 0, 'mask': 0, 'fio_filter': 0, 'org_filter': 0}
+
     for ent in doc.ents:
         if ent.label_ not in ('PER', 'ORG'):
             continue
 
         original = ent.text.strip()
         original = _FIO_TRAIL_RE.sub('', original)
-        # Trim trailing punctuation/brackets/quotes that NER often grabs
-        original = re.sub(r'^[\s«»"\'(\[]+|[\s«»"\'.,;:!?)\]]+$', '', original)
+        # Trim leading/trailing punctuation/brackets/quotes that NER often grabs.
+        # Also peel off any bracket-mask fragment NER might have glued on.
+        original = re.sub(r'^[\s«»"\'(\[]+|[\s«»"\'.,;:!?)\]]+$', '', original).strip()
+        # If the NER span started/ended inside a [TOKEN_N] mask, strip that part
+        original = PARTIAL_TOKEN_RE.sub('', original).strip()
+        original = re.sub(r'^[\s«»"\'(\[]+|[\s«»"\'.,;:!?)\]]+$', '', original).strip()
 
-        if _is_bracketed_token(original) or _contains_token(original):
+        if not original or len(original) < 3:
+            rejected['short'] += 1
             continue
-        if len(original) < 3:
+        if _is_bracketed_token(original) or _contains_token(original):
+            rejected['mask'] += 1
             continue
 
         etype = 'ФИО' if ent.label_ == 'PER' else 'ЮЛ'
 
+        if etype == 'ФИО':
+            if not _validate_spacy_fio(original):
+                rejected['fio_filter'] += 1
+                continue
+        else:
+            if not _validate_spacy_org(original):
+                rejected['org_filter'] += 1
+                continue
+
         if exclusions and (original, etype) in exclusions:
             continue
 
+        # canonical_form: nominative for FIO via pymorphy3, identical for ORG
+        canonical = _normalize_fio(original) if etype == 'ФИО' else original
+
         if original not in replacements:
-            token = get_or_create_token(db_path, session_id, original, original, etype)
+            token = get_or_create_token(db_path, session_id, original, canonical, etype)
             replacements[original] = f'[{token}]'
 
     for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
         text = text.replace(orig, tok)
 
-    if replacements:
-        print(f'[NER] {len(replacements)} entities found via spaCy')
+    if replacements or any(rejected.values()):
+        print(f'[NER] kept {len(replacements)} entities, rejected: {rejected}')
     return text, replacements
 
 
@@ -590,6 +829,38 @@ def _apply_known_entities(text: str, db_path, session_id: str) -> Tuple[str, Dic
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _apply_global_known(text: str, db_path, session_id: str,
+                         exclusions: set = None) -> Tuple[str, Dict[str, str]]:
+    """Apply entities the user has confirmed in previous sessions.
+    Runs BEFORE other passes so they don't try to re-detect these values."""
+    from core.db import get_known_entities
+    known = get_known_entities(db_path, limit=500)
+    if not known:
+        return text, {}
+
+    replacements = {}
+    # Replace longest first so we don't shadow longer matches
+    for item in sorted(known, key=lambda x: -len(x['value'])):
+        val = item['value']
+        etype = item['entity_type']
+        if not val or len(val) < 2:
+            continue
+        if _is_bracketed_token(val) or _contains_token(val):
+            continue
+        if exclusions and (val, etype) in exclusions:
+            continue
+        if val not in text:
+            continue
+        token = get_or_create_token(db_path, session_id, val, val, etype)
+        replacements[val] = f'[{token}]'
+
+    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
+        text = text.replace(orig, tok)
+    if replacements:
+        print(f'[KNOWN-GLOBAL] {len(replacements)} entities applied from previous sessions')
+    return text, replacements
+
+
 def anonymize_text_pipeline(
     text: str,
     db_path,
@@ -608,6 +879,10 @@ def anonymize_text_pipeline(
     exclusions = get_exclusions(db_path, session_id)
 
     all_reps: Dict[str, str] = {}
+
+    # Pass 0: globally-learned entities from prior sessions
+    text, reps0 = _apply_global_known(text, db_path, session_id, exclusions)
+    all_reps.update(reps0)
 
     # Pass 1: OPF + Regex
     text, reps1 = _apply_opf_pass(text, db_path, session_id, exclusions)

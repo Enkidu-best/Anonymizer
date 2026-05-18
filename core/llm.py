@@ -180,10 +180,13 @@ def _build_patterns_section(user_patterns: list) -> str:
     return "Дополнительные паттерны из документов пользователя:\n" + "\n".join(lines)
 
 
-CHUNK_SIZE = 1500
-OVERLAP    = 100
+CHUNK_SIZE = 3000          # larger now that masks compact the text
+OVERLAP    = 150
+SINGLE_CALL_THRESHOLD = 3500  # if doc fits, send a single Ollama call
 
 def _chunk_text(text):
+    if len(text) <= SINGLE_CALL_THRESHOLD:
+        return [text]
     chunks = []
     start = 0
     while start < len(text):
@@ -193,6 +196,31 @@ def _chunk_text(text):
             break
         start += CHUNK_SIZE - OVERLAP
     return chunks
+
+
+def preload_model_async():
+    """Send a minimal request to warm Ollama's model cache.
+    Called once at server startup so the first user request is fast."""
+    def _do():
+        global _llm_model
+        try:
+            check_ollama()
+            if not _llm_available:
+                return
+            # Pick the model: explicit setting > DEFAULT_MODEL if available > first available
+            if not _llm_model:
+                if DEFAULT_MODEL in _available_models:
+                    _llm_model = DEFAULT_MODEL
+                elif _available_models:
+                    _llm_model = _available_models[0]
+                else:
+                    return
+            print(f'[LLM] Preloading model {_llm_model}...')
+            _ollama_generate('ok', 'Краткий ответ', timeout=90)
+            print('[LLM] Model preloaded and ready')
+        except Exception as ex:
+            print(f'[LLM] Preload failed (will load on first use): {ex}')
+    threading.Thread(target=_do, daemon=True).start()
 
 
 def _ollama_generate(prompt: str, system: str,

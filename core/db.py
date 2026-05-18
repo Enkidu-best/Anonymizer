@@ -43,6 +43,14 @@ def init_db(db_path):
                 entity_type   TEXT NOT NULL,
                 PRIMARY KEY (session_id, original_form, entity_type)
             );
+
+            CREATE TABLE IF NOT EXISTS known_entities (
+                value         TEXT NOT NULL,
+                entity_type   TEXT NOT NULL,
+                seen_count    INTEGER NOT NULL DEFAULT 1,
+                last_seen_at  TEXT DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (value, entity_type)
+            );
         ''')
         # Migration: add original_form column to existing databases
         cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
@@ -240,12 +248,24 @@ def update_mapping_original(db_path, session_id: str, token: str, new_original: 
 
 
 def get_reverse_mappings(db_path, session_id: str) -> dict:
+    """Return {token: text-to-restore} for deanonymization.
+
+    Uses canonical_form when set — this lets the user override what is
+    returned by editing the "Базовая форма" column in the UI. If the user
+    has not customised it, canonical_form equals original_form so the
+    behaviour matches the original "restore the text exactly as found".
+    """
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            'SELECT token, original_form FROM mappings WHERE session_id=?',
+            'SELECT token, original_form, canonical_form FROM mappings WHERE session_id=?',
             (session_id,)
         ).fetchall()
-    return {r['token']: r['original_form'] for r in rows}
+    out = {}
+    for r in rows:
+        canon = (r['canonical_form'] or '').strip()
+        orig  = (r['original_form'] or '').strip()
+        out[r['token']] = canon or orig
+    return out
 
 
 def get_top_patterns(db_path, entity_type=None, limit=20) -> list:
@@ -313,3 +333,49 @@ def get_exclusions(db_path, session_id: str) -> set:
 def delete_session_exclusions(db_path, session_id: str):
     with get_conn(db_path) as conn:
         conn.execute('DELETE FROM exclusions WHERE session_id=?', (session_id,))
+
+
+# ── Global "known entities" — cross-session learning ─────────────────────────
+def remember_entity(db_path, value: str, entity_type: str):
+    """Record a (value, type) pair so future sessions auto-detect it."""
+    v = (value or '').strip()
+    t = (entity_type or '').strip()
+    if not v or not t:
+        return
+    with get_conn(db_path) as conn:
+        try:
+            conn.execute(
+                'INSERT INTO known_entities (value, entity_type) VALUES (?,?) '
+                'ON CONFLICT(value, entity_type) DO UPDATE SET '
+                'seen_count = seen_count + 1, '
+                "last_seen_at = datetime('now','localtime')",
+                (v, t)
+            )
+        except Exception:
+            # Fallback for SQLite without ON CONFLICT support (very old)
+            existing = conn.execute(
+                'SELECT seen_count FROM known_entities WHERE value=? AND entity_type=?',
+                (v, t)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    'UPDATE known_entities SET seen_count = seen_count + 1 '
+                    'WHERE value=? AND entity_type=?',
+                    (v, t)
+                )
+            else:
+                conn.execute(
+                    'INSERT INTO known_entities (value, entity_type) VALUES (?,?)',
+                    (v, t)
+                )
+
+
+def get_known_entities(db_path, limit: int = 500) -> list:
+    """Return list of {value, entity_type, seen_count} ordered by frequency."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            'SELECT value, entity_type, seen_count FROM known_entities '
+            'ORDER BY seen_count DESC, last_seen_at DESC LIMIT ?',
+            (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
