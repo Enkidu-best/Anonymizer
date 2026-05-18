@@ -509,7 +509,8 @@ const S = {
   sessions: [], active: null,
   mode: 'anonymize',
   procMode: 'regex_spacy',  // 'regex_spacy' | 'regex_spacy_llm' | 'llm_only'
-  files: [],
+  // Per-tab file lists so the Anonymize list isn't shown on Deanonymize and vice versa
+  filesByMode: { anonymize: [], deanonymize: [] },
   mappings: [],
   mapOpen: true,
   lastSid: null,
@@ -517,6 +518,13 @@ const S = {
   _modalResolve: null,
   _editMapResolve: null,
 };
+
+// Convenience: S.files is always the CURRENT mode's file list
+Object.defineProperty(S, 'files', {
+  get(){ return S.filesByMode[S.mode]; },
+  set(v){ S.filesByMode[S.mode] = v; },
+  configurable: true,
+});
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 async function init() {
@@ -684,7 +692,8 @@ async function newSession() {
 
 async function selectSession(id) {
   S.active=S.sessions.find(s=>s.id===id)||null;
-  S.files=[];S.mappings=[];S.lastSid=null;S.needsReprocess=false;
+  S.filesByMode = { anonymize: [], deanonymize: [] };
+  S.mappings=[];S.lastSid=null;S.needsReprocess=false;
   renderSessions();
   $('emptyState').classList.add('hidden');
   $('workArea').classList.remove('hidden');
@@ -696,23 +705,35 @@ async function selectSession(id) {
   updateAddManualBtn();
 }
 
+// Classify a restored output filename into the tab it belongs to
+function _modeForOutput(name){
+  return /^deanonymized[_-]/i.test(name) ? 'deanonymize' : 'anonymize';
+}
+
 async function loadSessionFiles() {
   if (!S.active) return;
   try {
     const d = await apiFetch(`/api/sessions/${S.active.id}/files`);
-    const existing = (d.files || []).map(f => ({
-      file: { name: f.output, size: f.size || 0 },
-      status: 'ok',
-      output: f.output,
-      entities: 0,
-      error: null,
-      _restored: true,
-    }));
-    if (existing.length) {
+    let restoredAny = false;
+    for (const f of (d.files || [])) {
+      const targetMode = _modeForOutput(f.output);
+      // Skip duplicates if already present
+      if (S.filesByMode[targetMode].find(x => x.output === f.output)) continue;
+      S.filesByMode[targetMode].push({
+        file: { name: f.output, size: f.size || 0 },
+        status: 'ok',
+        output: f.output,
+        entities: 0,
+        error: null,
+        _restored: true,
+      });
+      restoredAny = true;
+    }
+    if (restoredAny) {
       S.lastSid = S.active.id;
-      S.files = existing.concat(S.files);
       renderFileList();
-      if (existing.length > 1) {
+      const total = S.filesByMode.anonymize.length + S.filesByMode.deanonymize.length;
+      if (total > 1) {
         $('dlAllBtn').href = `/api/download-all/${S.active.id}`;
         $('dlAllBtn').classList.remove('hidden');
       }
@@ -739,10 +760,9 @@ const DESCS = {
   deanonymize:'Токены заменяются исходными значениями из маппинга текущей сессии.'
 };
 function setMode(m){
-  // Keep pending files visible when user only switches tabs; clear only the
-  // staging area, never the "already processed" rows shown in S.files.
+  // Each tab keeps its own file list — no cross-pollination between
+  // Anonymize and Deanonymize panes.
   S.mode=m;
-  S.files = S.files.filter(x => x.status === 'ok' || x.status === 'err');
   renderFileList();updateProcBtn();
   $('mAnon').className='mode-btn'+(m==='anonymize'?' active':'');
   $('mDean').className='mode-btn'+(m==='deanonymize'?' active':'');
@@ -769,7 +789,29 @@ function addFiles(list){
   }
   renderFileList();updateProcBtn();
 }
-function removeFile(i){S.files.splice(i,1);renderFileList();updateProcBtn();}
+async function removeFile(i){
+  const item = S.files[i];
+  if (!item) return;
+  // For completed files, also delete the output on disk
+  if (item.status === 'ok' && item.output && S.active) {
+    const ok = await showModal({
+      title: 'Удалить файл из сессии?',
+      sub: `«${item.output}» будет удалён вместе с выходным файлом. Маппинги сессии остаются.`,
+      hasInput: false, okLabel: 'Удалить', okDanger: true,
+    });
+    if (!ok) return;
+    try {
+      await apiFetch(`/api/sessions/${S.active.id}/files/${encodeURIComponent(item.output)}`,
+                      { method: 'DELETE' });
+    } catch (ex) {
+      toast('Не удалось удалить файл: ' + ex.message, 'err');
+      return;
+    }
+  }
+  S.files.splice(i, 1);
+  renderFileList();
+  updateProcBtn();
+}
 
 function renderFileList(){
   const el=$('fileList');
@@ -793,7 +835,7 @@ function renderFileList(){
       <div class="file-actions">
         ${item.status==='ok'&&item.output
           ?`<a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.output)}" download="${esc(item.output)}">⬇ Скачать</a>`:''}
-        ${!isDone?`<button class="rm-btn" onclick="removeFile(${i})">×</button>`:''}
+        ${item.status!=='loading'?`<button class="rm-btn" title="Удалить файл из сессии" onclick="removeFile(${i})">×</button>`:''}
       </div>
     </div>`;
   }).join('');
