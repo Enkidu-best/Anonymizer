@@ -33,3 +33,9 @@ tests/bench/fails.json
 
 # Local archives
 *.zip
+
+# Owner's local test data and backups — never commit
+Проверка распознавания текста/
+*.bundle
+*.tar.gz
+private/
