@@ -58,6 +58,10 @@ def init_db(db_path):
             conn.execute("ALTER TABLE mappings ADD COLUMN original_form TEXT NOT NULL DEFAULT ''")
             conn.execute('UPDATE mappings SET original_form = canonical_form WHERE original_form = ""')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map_orig ON mappings(session_id, original_form, entity_type)')
+        # Migration: canonical_form is restored on deanon only when the user edited it
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
+        if 'canonical_edited' not in cols:
+            conn.execute('ALTER TABLE mappings ADD COLUMN canonical_edited INTEGER NOT NULL DEFAULT 0')
         # Enforce token uniqueness within session.
         # Existing databases may contain duplicates from the old COUNT(*)+1 bug —
         # rename the duplicates to free token numbers before adding the index.
@@ -137,7 +141,7 @@ def delete_session(db_path, session_id: str):
 def get_session_mappings(db_path, session_id: str):
     with get_conn(db_path) as conn:
         rows = conn.execute('''
-            SELECT token, original_form, canonical_form, entity_type, created_at
+            SELECT token, original_form, canonical_form, entity_type, canonical_edited, created_at
             FROM mappings
             WHERE session_id=?
             ORDER BY entity_type, token
@@ -165,6 +169,16 @@ _PREFIX = {
     'ДАТАРОЖД': 'DOB',
     'ЛИЦЕНЗИЯ': 'LIC',
     'URL':      'URL',
+    'КАРТА':    'CARD',
+    'IBAN':     'IBAN',
+    'КАДАСТР':  'CAD',
+    'ГОСНОМЕР': 'CAR',
+    'VIN':      'VIN',
+    'ОКПО':     'OKPO',
+    'ПОЛИС':    'OMS',
+    'ВУ':       'DL',
+    'НИК':      'NICK',
+    'НОТАРИУС': 'NOT',
     'FIO':      'FIO',
     'YUL':      'YUL',
     'ADDR_PHYS': 'ADR',
@@ -194,7 +208,7 @@ def _next_token_number(conn, session_id: str, prefix: str) -> int:
 
 def get_or_create_token(db_path, session_id: str,
                         original_form: str, canonical_form: str,
-                        entity_type: str) -> str:
+                        entity_type: str, canonical_edited: bool = False) -> str:
     with get_conn(db_path) as conn:
         row = conn.execute(
             'SELECT token FROM mappings '
@@ -210,9 +224,9 @@ def get_or_create_token(db_path, session_id: str,
 
         conn.execute(
             'INSERT OR IGNORE INTO mappings '
-            '(session_id, token, original_form, canonical_form, entity_type) '
-            'VALUES (?,?,?,?,?)',
-            (session_id, token, original_form, canonical_form, entity_type)
+            '(session_id, token, original_form, canonical_form, entity_type, canonical_edited) '
+            'VALUES (?,?,?,?,?,?)',
+            (session_id, token, original_form, canonical_form, entity_type, int(canonical_edited))
         )
     return token
 
@@ -229,7 +243,7 @@ def update_mapping(db_path, session_id: str, token: str, data: dict):
     with get_conn(db_path) as conn:
         if data.get('canonical_form'):
             conn.execute(
-                'UPDATE mappings SET canonical_form=? WHERE session_id=? AND token=?',
+                'UPDATE mappings SET canonical_form=?, canonical_edited=1 WHERE session_id=? AND token=?',
                 (data['canonical_form'], session_id, token)
             )
         if data.get('entity_type'):
@@ -250,21 +264,21 @@ def update_mapping_original(db_path, session_id: str, token: str, new_original: 
 def get_reverse_mappings(db_path, session_id: str) -> dict:
     """Return {token: text-to-restore} for deanonymization.
 
-    Uses canonical_form when set — this lets the user override what is
-    returned by editing the "Базовая форма" column in the UI. If the user
-    has not customised it, canonical_form equals original_form so the
-    behaviour matches the original "restore the text exactly as found".
+    Restores the exact original form (case, spelling). canonical_form (e.g. the
+    nominative case from pymorphy3) is used only when the user edited the
+    "Базовая форма" column by hand (canonical_edited=1).
     """
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            'SELECT token, original_form, canonical_form FROM mappings WHERE session_id=?',
+            'SELECT token, original_form, canonical_form, canonical_edited '
+            'FROM mappings WHERE session_id=?',
             (session_id,)
         ).fetchall()
     out = {}
     for r in rows:
         canon = (r['canonical_form'] or '').strip()
         orig  = (r['original_form'] or '').strip()
-        out[r['token']] = canon or orig
+        out[r['token']] = (canon or orig) if (r['canonical_edited'] or not orig) else orig
     return out
 
 

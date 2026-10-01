@@ -131,24 +131,23 @@ def _accept_tracked_changes(doc):
 def _replace_para(para, replacements: dict):
     if not replacements or not para.text.strip():
         return
+    from core.anonymizer import replace_bounded, contains_bounded
     sorted_reps = sorted(replacements.items(), key=lambda x: -len(x[0]))
 
-    for old, new in sorted_reps:
-        for run in para.runs:
-            if old in run.text:
-                run.text = run.text.replace(old, new)
+    for run in para.runs:
+        if run.text:
+            new_text = replace_bounded(run.text, replacements)
+            if new_text != run.text:
+                run.text = new_text
 
     for old, new in sorted_reps:
-        if old not in para.text:
-            continue
         runs = para.runs
         if not runs:
             continue
         full = ''.join(r.text for r in runs)
-        if old not in full:
+        if not contains_bounded(full, old):
             continue
-        new_full = full.replace(old, new)
-        runs[0].text = new_full
+        runs[0].text = replace_bounded(full, {old: new})
         for r in runs[1:]:
             r.text = ''
 
@@ -159,10 +158,10 @@ def _replace_para(para, replacements: dict):
             for run_el in hl.iter(qn('w:r')):
                 for t_el in run_el.iter(qn('w:t')):
                     if t_el.text:
-                        for old, new in sorted_reps:
-                            if old in t_el.text:
-                                t_el.text = t_el.text.replace(old, new)
-                                hl_modified = True
+                        new_text = replace_bounded(t_el.text, replacements)
+                        if new_text != t_el.text:
+                            t_el.text = new_text
+                            hl_modified = True
             if hl_modified:
                 parent = hl.getparent()
                 if parent is not None:
@@ -360,28 +359,38 @@ def _deanon_pdf(input_path, output_path, rev):
 # XLSX helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _xlsx_cell_text(value):
+    """Text of a cell for detection; integers (INN, phones stored as numbers) included."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) >= 10**5:
+        return str(value)
+    return None
+
+
 def _anon_xlsx(input_path, output_path, session_id, db_path,
                use_spacy=True, use_llm=False):
     from openpyxl import load_workbook
-    from core.anonymizer import anonymize_text_pipeline
+    from core.anonymizer import anonymize_text_pipeline, replace_bounded
 
     wb = load_workbook(str(input_path))
     all_text = '\n'.join(
-        str(cell.value) for ws in wb.worksheets
+        t for ws in wb.worksheets
         for row in ws.iter_rows() for cell in row
-        if isinstance(cell.value, str) and cell.value.strip()
+        for t in [_xlsx_cell_text(cell.value)] if t and t.strip()
     )
     _, reps = anonymize_text_pipeline(all_text, db_path, session_id,
                                       use_spacy=use_spacy, use_llm=use_llm)
 
     if reps:
-        sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
         for ws in wb.worksheets:
             for row in ws.iter_rows():
                 for cell in row:
-                    if isinstance(cell.value, str):
-                        for orig, tok in sorted_reps:
-                            cell.value = cell.value.replace(orig, tok)
+                    t = _xlsx_cell_text(cell.value)
+                    if t:
+                        new = replace_bounded(t, reps)
+                        if new != t:
+                            cell.value = new
 
     wb.save(str(output_path))
     return {'entities_found': len(reps)}
@@ -397,7 +406,11 @@ def _deanon_xlsx(input_path, output_path, rev):
             for row in ws.iter_rows():
                 for cell in row:
                     if isinstance(cell.value, str):
-                        cell.value = apply_reverse(cell.value, rev)
+                        restored = apply_reverse(cell.value, rev)
+                        # numbers that were masked come back as numbers
+                        if restored != cell.value and restored.isdigit() and not restored.startswith('0'):
+                            restored = int(restored)
+                        cell.value = restored
     wb.save(str(output_path))
     return {}
 

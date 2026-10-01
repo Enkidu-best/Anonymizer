@@ -206,7 +206,9 @@ def update_mapping_route(sid, token):
     if new_original != old['original_form']:
         add_exclusion(DB_PATH, sid, old['original_form'], old['entity_type'])
     delete_mapping(DB_PATH, sid, token)
-    new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type)
+    edited = bool(old.get('canonical_edited')) or new_canonical != old['canonical_form']
+    new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type,
+                                    canonical_edited=edited)
     # User explicitly confirmed this entity — remember globally for future sessions
     remember_entity(DB_PATH, new_original, new_type)
     return jsonify({'ok': True, 'new_token': new_token})
@@ -221,13 +223,15 @@ def add_mapping_route(sid):
     entity_type = (data.get('entity_type')    or '').strip()
     if not entity_type:
         return jsonify({'error': 'entity_type обязателен'}), 400
+    edited = bool(canonical) and bool(original) and canonical != original
     if not canonical:
         canonical = original
     if not original:
         original = canonical
     if not original:
         return jsonify({'error': 'original_form или canonical_form обязательны'}), 400
-    token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type)
+    token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type,
+                                canonical_edited=edited)
     # Manually added → strong signal this is real PII. Cross-session learn.
     remember_entity(DB_PATH, original, entity_type)
     return jsonify({'token': token, 'original_form': original,

@@ -15,6 +15,7 @@ import threading
 from typing import Tuple, Dict, List
 
 from core.db import get_or_create_token, get_session_mappings, get_top_patterns
+from core.detectors import _is_payment_bank
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ def _p(pattern):
 _TOKEN_PREFIXES = (
     'FIO', 'YUL', 'INN', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
     'PASSPORT', 'TEL', 'EMAIL', 'SWIFT', 'ADR', 'DOB', 'LIC', 'URL',
+    'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT',
     'ДАТАРОЖД',
 )
 _TOKEN_PFX_ALT = '|'.join(_TOKEN_PREFIXES)
@@ -100,6 +102,28 @@ ANY_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+\]')
 # Partial token leak: open bracket + known prefix + digit, no closing bracket needed.
 # Catches NER fragments like "АО «[YUL_1" that grabbed only part of a mask.
 PARTIAL_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+')
+
+
+def _bounded_pattern(keys):
+    parts = []
+    for k in sorted(keys, key=len, reverse=True):
+        pre = r'(?<![\w])' if k[:1].isalnum() else ''
+        post = r'(?![\w])' if k[-1:].isalnum() else ''
+        parts.append(pre + re.escape(k) + post)
+    return re.compile('|'.join(parts), re.UNICODE)
+
+
+def replace_bounded(text: str, replacements: Dict[str, str]) -> str:
+    """Replace every key with its value in one pass, longest key first, without
+    touching keys embedded in longer words or numbers («Иванов» ≠ «Ивановский»)."""
+    reps = {k: v for k, v in replacements.items() if k}
+    if not text or not reps:
+        return text
+    return _bounded_pattern(tuple(reps)).sub(lambda m: reps[m.group(0)], text)
+
+
+def contains_bounded(text: str, key: str) -> bool:
+    return bool(key) and bool(_bounded_pattern((key,)).search(text))
 
 
 def _wrap(token: str) -> str:
@@ -149,7 +173,7 @@ _OPF_FULL = (
     r'государственн\w+\s+корпораци\w+|'
     r'политическ\w+\s+парти\w+|'
     r'профессиональн\w+\s+союз\w+|'
-    r'(?:благотворительн\w+\s+)?фонд\s|'
+    r'(?:благотворительн\w+\s+)?фонд\w*|'
     r'ассоциаци\w+(?:\s+и\s+союз\w+)?|'
     r'объединени\w+\s+юридических\s+лиц|'
     r'казачь\w+\s+общест\w+|'
@@ -181,7 +205,9 @@ _OPF_SHORT = (
     r'АНО|НП|НКО|ГК|КБ|ИП|'
     r'ТСЖ|СНТ|ОНТ|ДНТ|'
     r'ФГУ|ФГАУ|ФГБУ|ФГКУ|ФКУ|'
-    r'ГБУ|ГКУ|ОГУ|МКУ|ФГАОУ)'
+    r'ГБУ|ГКУ|ОГУ|МКУ|ФГАОУ|'
+    r'ГБУЗ|ГАУЗ|ГКУЗ|ФГБУЗ|ГБОУ|ГАОУ|ФГБОУ|МБОУ|МАОУ|МКОУ|МБДОУ|МАДОУ|'
+    r'МБУ|МАУ|ГАУ|ГОУ|МОУ|МОО|РОО)'
 )
 
 _OPF_PFX = (
@@ -200,6 +226,13 @@ _OPF_RE_STRAIGHT = _p(
     r'([""])'
 )
 
+# Typographic quote pairs: “…”  „…“  ‘…’  '…'
+_OPF_RE_TYPO = _p(
+    r'(' + _OPF_PFX + r'[“„‘\'])'
+    r'([^“”„‘’\'\n]{2,80})'
+    r'([”“’\'])'
+)
+
 _OPF_SUFFIX_SHORT = r'(?:' + _OPF_SHORT + r')'
 _OPF_SUFFIX_ANY = r'(?:' + _OPF_SHORT + r'|' + _OPF_FULL + r')'
 _OPF_RE_ANGLE_SFX = _p(
@@ -207,7 +240,7 @@ _OPF_RE_ANGLE_SFX = _p(
     r'\s*\(' + _OPF_SUFFIX_ANY + r'\)'
 )
 _OPF_RE_STRAIGHT_SFX = _p(
-    r'[""]([^""\n]{2,80})[""]'
+    r'["“„]([^"“”„\n]{2,80})["”“]'
     r'\s*\(' + _OPF_SUFFIX_ANY + r'\)'
 )
 
@@ -220,10 +253,12 @@ _OPF_RE_INNER_ANGLE = _p(
 def _apply_opf_pass(text: str, db_path, session_id: str,
                     exclusions: set = None) -> Tuple[str, Dict[str, str]]:
     all_matches = []
-    for pattern in (_OPF_RE_ANGLE, _OPF_RE_STRAIGHT):
+    for pattern in (_OPF_RE_ANGLE, _OPF_RE_STRAIGHT, _OPF_RE_TYPO):
         for m in pattern.finditer(text):
             inner = m.group(2).strip()
             if len(inner) < 2 or _is_bracketed_token(inner) or _contains_token(inner):
+                continue
+            if _is_payment_bank(text, m.start()):
                 continue
             all_matches.append((m.start(2), m.end(2), inner))
 
@@ -379,7 +414,7 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'([А-ЯЁ][а-яё]{1,20}'
             r'\s+[А-ЯЁ][а-яё]{1,15}'
             r'\s+[А-ЯЁ][а-яё]*'
-            r'(?:ович|евич|овна|евна|ична)[а-яё]*)'
+            r'(?:ович|евич|овн|евн|ичн|инич)[а-яё]*)'
             r'(?![А-ЯЁа-яё])'
         ), 1),
         (_p(
@@ -392,7 +427,7 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
             r'([А-ЯЁ][а-яё]{1,20}'
             r'(?:\s+[А-ЯЁ][а-яё]{1,15}'
             r'(?:\s+[А-ЯЁ][а-яё]*'
-            r'(?:ович|евич|овна|евна|ична)[а-яё]*)?)?'
+            r'(?:ович|евич|овн|евн|ичн|инич)[а-яё]*)?)?'
             r'(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)?)'
             r'\s*/'
         ), 1),
@@ -489,7 +524,7 @@ def _validate_fio_regex(text: str) -> bool:
 
 _HAS_INITIALS_RE = re.compile(r'[А-ЯЁ]\.\s*[А-ЯЁ]\.', re.UNICODE)
 _HAS_PATRONYMIC_RE = re.compile(
-    r'\b[А-ЯЁ][а-яё]+(?:ович|евич|овна|евна|ична|инична|иничн)\b',
+    r'\b[А-ЯЁ][а-яё]+(?:ович|евич|овн|евн|ичн|инич)[а-яё]*\b',
     re.UNICODE,
 )
 
@@ -660,81 +695,86 @@ def _normalize_fio(text: str) -> str:
 
 def _apply_regex_pass(text: str, db_path, session_id: str,
                       exclusions: set = None) -> Tuple[str, Dict[str, str]]:
+    from core.detectors import find_all
     matches = []
     used    = []
 
+    def _add(s, e, etype):
+        value = text[s:e]
+        stripped = value.strip()
+        if not stripped:
+            return
+        s += len(value) - len(value.lstrip())
+        e -= len(value) - len(value.rstrip())
+        value = stripped
+        if etype == 'ФИО':
+            cut = _FIO_TRAIL_RE.sub('', value)
+            if cut != value and not re.search(r'[А-ЯЁ]\.$', value):
+                e -= len(value) - len(cut)
+                value = cut
+            if not value or not _validate_fio_regex(value):
+                return
+        if etype == 'АДРЕС' and len(value) < 5:
+            return
+        if _contains_token(value) or _contains_token(text[max(0, s - 1):e + 1]):
+            return
+        if exclusions and (value, etype) in exclusions:
+            return
+        if any(not (e <= us or s >= ue) for us, ue in used):
+            return
+        matches.append((s, e, value, etype))
+        used.append((s, e))
+
+    # 1. New rule detectors (form + context + checksum), values only
+    for h in find_all(text):
+        _add(h.start, h.end, h.type)
+
+    # 2. Legacy patterns; multi-group patterns mask each group separately
     for entity_type, patterns in REGEX_PATTERNS:
         for pat, grp in patterns:
             for m in pat.finditer(text):
                 if grp == 0:
-                    groups = [g for g in m.groups() if g]
-                    if not groups:
-                        continue
-                    value = ' '.join(g.strip() for g in groups)
-                    orig_text = m.group(0)
-                    s, e  = m.start(), m.end()
+                    for gi in range(1, (m.lastindex or 0) + 1):
+                        if m.group(gi):
+                            _add(m.start(gi), m.end(gi), entity_type)
                 else:
                     try:
-                        value = (m.group(grp) or '').strip()
-                        orig_text = value
-                        s, e  = m.start(grp), m.end(grp)
+                        if m.group(grp):
+                            _add(m.start(grp), m.end(grp), entity_type)
                     except IndexError:
                         continue
-
-                if not value:
-                    continue
-                if entity_type == 'АДРЕС' and len(value) < 10:
-                    continue
-
-                # Skip if match contains a mask token (already-anonymized content)
-                if _contains_token(value) or _contains_token(orig_text):
-                    continue
-
-                if exclusions and (orig_text, entity_type) in exclusions:
-                    continue
-
-                if entity_type == 'ФИО':
-                    stripped = _FIO_TRAIL_RE.sub('', value)
-                    if stripped != value:
-                        e -= len(value) - len(stripped)
-                        value = stripped
-                        orig_text = _FIO_TRAIL_RE.sub('', orig_text)
-                    if not value:
-                        continue
-                    if not _validate_fio_regex(value):
-                        continue
-
-                if any(not (e <= us or s >= ue) for us, ue in used):
-                    continue
-
-                matches.append((s, e, value, entity_type, orig_text))
-                used.append((s, e))
 
     if not matches:
         return text, {}
 
     matches.sort(key=lambda x: x[0])
     replacements = {}
-    for _, _, value, etype, orig_text in matches:
-        if orig_text not in replacements:
-            token = _wrap(get_or_create_token(db_path, session_id, orig_text, value, etype))
-            replacements[orig_text] = token
+    out, last = [], 0
+    for s, e, value, etype in matches:
+        if value not in replacements:
+            replacements[value] = _wrap(get_or_create_token(db_path, session_id, value, value, etype))
+        out.append(text[last:s])
+        out.append(replacements[value])
+        last = e
+    out.append(text[last:])
+    text = ''.join(out)
 
-    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
-        text = text.replace(orig, tok)
-
-    if replacements:
-        by_type: Dict[str, int] = {}
-        for _, _, _, etype, _ in matches:
-            by_type[etype] = by_type.get(etype, 0) + 1
-        print(f'[REGEX] {len(replacements)} entities: ' +
-              ', '.join(f'{k}={v}' for k, v in sorted(by_type.items())))
+    by_type: Dict[str, int] = {}
+    for _, _, _, etype in matches:
+        by_type[etype] = by_type.get(etype, 0) + 1
+    print(f'[REGEX] {len(replacements)} entities: ' +
+          ', '.join(f'{k}={v}' for k, v in sorted(by_type.items())))
     return text, replacements
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # spaCy NER pass
 # ─────────────────────────────────────────────────────────────────────────────
+
+_OPF_LEAD_RE = re.compile(r'^(?:' + _OPF_SHORT + r'|' + _OPF_FULL + r')\s+', re.IGNORECASE | re.UNICODE)
+_OPF_ONLY_RE = re.compile(r'(?:' + _OPF_SHORT + r'|' + _OPF_FULL + r')(?:\s+(?:' + _OPF_SHORT + r'))?',
+                          re.IGNORECASE | re.UNICODE)
+
 
 def _apply_spacy_pass(text: str, db_path, session_id: str,
                       exclusions: set = None) -> Tuple[str, Dict[str, str]]:
@@ -748,6 +788,7 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
         return text, {}
 
     replacements = {}
+    spans = []
     rejected = {'short': 0, 'mask': 0, 'fio_filter': 0, 'org_filter': 0}
 
     for ent in doc.ents:
@@ -772,6 +813,16 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
 
         etype = 'ФИО' if ent.label_ == 'PER' else 'ЮЛ'
 
+        if etype == 'ЮЛ':
+            # Keep the legal form in the text: «ООО Вектор» → mask only «Вектор»
+            original = _OPF_LEAD_RE.sub('', original).strip(' «»"\'“”„')
+            if not original or _OPF_ONLY_RE.fullmatch(original):
+                rejected['org_filter'] += 1
+                continue
+            if _is_payment_bank(text, ent.start_char):
+                rejected['org_filter'] += 1
+                continue
+
         if etype == 'ФИО':
             if not _validate_spacy_fio(original):
                 rejected['fio_filter'] += 1
@@ -787,12 +838,24 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
         # canonical_form: nominative for FIO via pymorphy3, identical for ORG
         canonical = _normalize_fio(original) if etype == 'ФИО' else original
 
+        off = text.find(original, ent.start_char, ent.end_char + 1)
+        if off < 0:
+            continue
         if original not in replacements:
             token = get_or_create_token(db_path, session_id, original, canonical, etype)
             replacements[original] = f'[{token}]'
+        spans.append((off, off + len(original), replacements[original]))
 
-    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
-        text = text.replace(orig, tok)
+    spans.sort()
+    out, last = [], 0
+    for s_, e_, tok in spans:
+        if s_ < last:
+            continue
+        out.append(text[last:s_])
+        out.append(tok)
+        last = e_
+    out.append(text[last:])
+    text = ''.join(out)
 
     if replacements or any(rejected.values()):
         print(f'[NER] kept {len(replacements)} entities, rejected: {rejected}')
@@ -812,14 +875,13 @@ def _apply_known_entities(text: str, db_path, session_id: str) -> Tuple[str, Dic
     for m in sorted(mappings, key=lambda x: -len(x['original_form'])):
         original = m['original_form']
         token = f"[{m['token']}]"
-        if original in text and not _is_bracketed_token(original):
+        if contains_bounded(text, original) and not _is_bracketed_token(original):
             replacements[original] = token
 
     if not replacements:
         return text, {}
 
-    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
-        text = text.replace(orig, tok)
+    text = replace_bounded(text, replacements)
 
     print(f'[KNOWN] {len(replacements)} existing entities applied')
     return text, replacements
@@ -849,13 +911,12 @@ def _apply_global_known(text: str, db_path, session_id: str,
             continue
         if exclusions and (val, etype) in exclusions:
             continue
-        if val not in text:
+        if not contains_bounded(text, val):
             continue
         token = get_or_create_token(db_path, session_id, val, val, etype)
         replacements[val] = f'[{token}]'
 
-    for orig, tok in sorted(replacements.items(), key=lambda x: -len(x[0])):
-        text = text.replace(orig, tok)
+    text = replace_bounded(text, replacements)
     if replacements:
         print(f'[KNOWN-GLOBAL] {len(replacements)} entities applied from previous sessions')
     return text, replacements
