@@ -345,8 +345,8 @@ def _realty(text: str) -> List[Hit]:
         seps = len(re.findall(r'[:/\-]', v))
         if seps < 2 or not (re.search(r'(?:19|20)\d{2}', v) or v.count(':') >= 2):
             continue
-        if _CADASTRAL.fullmatch(v):
-            continue   # plain cadastral number — own detector
+        if _CADASTRAL.fullmatch(v) or re.fullmatch(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', v):
+            continue   # plain cadastral number (own detector) or a date «17/01/2013»
         right = text[m.end():m.end() + 40]
         if _ctx(_REG_CTX, text, m.start(), 80) or _REG_CTX.search(right) or \
                 re.search(r'запис\w*[^\d]{0,30}$', _left(text, m.start(), 40), _I):
