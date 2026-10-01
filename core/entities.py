@@ -124,8 +124,35 @@ def value_key(text: str, etype: str) -> str:
     if etype in ('ИНН', 'ОГРН', 'КПП', 'РС', 'КС', 'БИК', 'СНИЛС', 'КАРТА', 'ТЕЛЕФОН', 'ОКПО', 'ПОЛИС') and digits:
         return digits[-10:] if etype == 'ТЕЛЕФОН' else digits
     if etype == 'ЮЛ':
-        return org_key(text)
+        return org_key(text.replace('\xad', ''))
+    if etype in ('АДРЕС', 'ADR'):
+        return address_key(text)
     return re.sub(r'\s+', ' ', _yo(text)).strip(' .,;:')
+
+
+def compact_key(text: str) -> str:
+    """Letters and digits only: «ВекторФ уд» (OCR space), «Вектор\\xadФуд», «ВЕКТОРФУД» → «векторфуд»."""
+    return re.sub(r'[^0-9a-zа-я]', '', _yo(text.replace('\xad', '')))
+
+
+_ADDR_ABBR = [
+    (r'\b(?:город|гор)\b\.?', 'г'), (r'\bг\.', 'г'), (r'\bулица\b|\bул\.', 'ул'), (r'\bдом\b|\bд\.', 'д'),
+    (r'\bквартира\b|\bкв\.', 'кв'), (r'\bпроспект\b|\bпр-кт\b|\bпр-т\b|\bпросп\.', 'пр'),
+    (r'\bпереулок\b|\bпер\.', 'пер'), (r'\bстроение\b|\bстр\.', 'стр'), (r'\bкорпус\b|\bкорп\.|\bк\.', 'к'),
+    (r'\bофис\b|\bоф\.', 'оф'), (r'\bпомещение\b|\bпомещ\.|\bпом\.', 'пом'), (r'\bобласть\b|\bобл\.', 'обл'),
+    (r'\bнабережная\b|\bнаб\.', 'наб'), (r'\bшоссе\b|\bш\.', 'ш'), (r'\bбульвар\b|\bб-р\b', 'бр'),
+]
+
+
+def address_key(text: str) -> str:
+    """«г. Тверь, ул. Озёрная, д. 17» = «город Тверь, улица Озерная, дом 17»; index and
+    country do not matter."""
+    t = _yo(text)
+    t = re.sub(r'(?<!\d)\d{6}(?!\d)', ' ', t)
+    t = re.sub(r'российская\s+федерация|\bрф\b|\bроссия\b', ' ', t)
+    for rx, rep in _ADDR_ABBR:
+        t = re.sub(rx, f' {rep} ', t)
+    return ' '.join(re.findall(r'[0-9a-zа-я/]+', t))
 
 
 def same_person(a: str, b: str) -> bool:

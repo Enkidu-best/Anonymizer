@@ -52,7 +52,7 @@ def extract_text(path, meta: bool = True) -> str:
     if ext == '.rtf':
         from core import rtf
         raw = path.read_bytes()
-        text, _ = rtf.decode(raw)
+        text, _ = rtf.decode(raw, fields=meta)   # preview (meta=False): visible text only
         import re
         info = re.findall(rb'\{\\(?:author|operator|company|manager|title)\s*([^{}]*)\}', raw)
         if not meta:

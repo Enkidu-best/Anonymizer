@@ -28,8 +28,11 @@ def _codepage(raw: bytes) -> str:
     return f'cp{m.group(1).decode()}' if m else 'cp1252'
 
 
-def decode(raw: bytes) -> Tuple[str, List[Tuple[int, int]]]:
-    """Visible text and, per character, its (start, end) span in raw bytes."""
+def decode(raw: bytes, fields: bool = True) -> Tuple[str, List[Tuple[int, int]]]:
+    """Text and, per character, its (start, end) span in raw bytes.
+
+    fields=True also reads field codes (HYPERLINK "mailto:…") — they are searched for
+    personal data; fields=False gives only the visible text (preview, comparisons)."""
     enc = _codepage(raw)
     text, spans = [], []
     stack = []          # (skip, uc)
@@ -57,7 +60,7 @@ def decode(raw: bytes) -> Tuple[str, List[Tuple[int, int]]]:
             w = word.decode()
             if star:
                 star = False
-                if w not in ('fldinst',):   # field code may hold mailto:/URLs with PII
+                if not fields or w not in ('fldinst',):   # field code may hold mailto:/URLs
                     skip = True
                     continue
             if w in _SKIP_DEST or w == 'info':

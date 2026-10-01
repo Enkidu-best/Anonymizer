@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import uuid
 from pathlib import Path
@@ -13,7 +14,7 @@ class _Conn(sqlite3.Connection):
             self.close()
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def get_conn(db_path):
@@ -84,6 +85,20 @@ def init_db(db_path):
                 original   TEXT NOT NULL
             )''')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_occ ON occurrences(session_id, file_key)')
+        # v4: places — exact forms per anonymized paragraph/cell, keyed by a fingerprint
+        # of its anonymized text; restore uses them by place, not by occurrence number
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS places (
+                session_id TEXT NOT NULL,
+                place_hash TEXT NOT NULL,
+                items      TEXT NOT NULL,
+                PRIMARY KEY (session_id, place_hash)
+            )''')
+        # v4: mappings are never deleted — status active / excluded (user: «не маскировать») /
+        # replaced (user edited it); inactive rows still restore files downloaded earlier
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
+        if 'status' not in cols:
+            conn.execute("ALTER TABLE mappings ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         if version < SCHEMA_VERSION:
             # v2.2 databases may hold duplicate tokens from the old COUNT(*)+1 bug — renumber
@@ -162,19 +177,21 @@ def get_all_sessions(db_path):
 def delete_session(db_path, session_id: str):
     with get_conn(db_path) as conn:
         conn.execute('DELETE FROM occurrences WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM places WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM mappings    WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM exclusions  WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM sessions    WHERE id=?',         (session_id,))
 
 
-def get_session_mappings(db_path, session_id: str):
+def get_session_mappings(db_path, session_id: str, include_inactive: bool = False):
+    """Active entries (what the UI table shows); include_inactive adds the archive."""
     with get_conn(db_path) as conn:
         rows = conn.execute('''
-            SELECT token, original_form, canonical_form, entity_type, canonical_edited, created_at
+            SELECT token, original_form, canonical_form, entity_type, canonical_edited, created_at, status
             FROM mappings
-            WHERE session_id=?
+            WHERE session_id=? AND (status='active' OR ?)
             ORDER BY entity_type, token
-        ''', (session_id,)).fetchall()
+        ''', (session_id, int(include_inactive))).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -244,8 +261,8 @@ def _same_entity_token(conn, session_id, original, etype):
     a lone surname joins only if exactly one known person has it.
     Other types: same normalized value (digits for numbers, word lemmas for companies)."""
     from core.entities import Person, value_key
-    rows = conn.execute('SELECT token, original_form FROM mappings WHERE session_id=? AND entity_type=?',
-                        (session_id, etype)).fetchall()
+    rows = conn.execute("SELECT token, original_form FROM mappings WHERE session_id=? AND entity_type=? "
+                        "AND status='active'", (session_id, etype)).fetchall()
     if not rows:
         return None
     if etype in ('ФИО', 'FIO'):
@@ -268,22 +285,30 @@ def _same_entity_token(conn, session_id, original, etype):
     key = value_key(original, etype)
     if not key:
         return None
+    from core.entities import compact_key
+    compact = compact_key(original) if etype == 'ЮЛ' else None
     for r in rows:
         if value_key(r['original_form'], etype) == key:
+            return r['token']
+        # company names after OCR: a space or soft hyphen inside a word («ВекторФ уд»)
+        if compact and len(compact) >= 5 and compact_key(r['original_form']) == compact:
             return r['token']
     return None
 
 
 def get_or_create_token(db_path, session_id: str,
                         original_form: str, canonical_form: str,
-                        entity_type: str, canonical_edited: bool = False) -> str:
+                        entity_type: str, canonical_edited: bool = False, manual: bool = False) -> str:
     with get_conn(db_path) as conn:
         row = conn.execute(
-            'SELECT token FROM mappings '
+            'SELECT token, status FROM mappings '
             'WHERE session_id=? AND original_form=? AND entity_type=?',
             (session_id, original_form, entity_type)
         ).fetchone()
         if row:
+            if row['status'] != 'active' and manual:   # added again by hand after «не маскировать»
+                conn.execute("UPDATE mappings SET status='active' WHERE session_id=? AND token=?",
+                             (session_id, row['token']))
             return row['token']
 
         token = _same_entity_token(conn, session_id, original_form, entity_type)
@@ -309,11 +334,33 @@ def add_alias(db_path, session_id: str, token: str, original: str, entity_type: 
 
 
 def delete_mapping(db_path, session_id: str, token: str):
+    """«Не маскировать»: the token stops being used, but its values are kept so that
+    files downloaded earlier with this token still restore."""
+    _set_status(db_path, session_id, token, 'excluded')
+
+
+def retire_mapping(db_path, session_id: str, token: str):
+    """The user edited the entry: the old token is replaced by a new one, kept for old files."""
+    _set_status(db_path, session_id, token, 'replaced')
+
+
+def _set_status(db_path, session_id, token, status):
     with get_conn(db_path) as conn:
-        conn.execute(
-            'DELETE FROM mappings WHERE session_id=? AND token=?',
-            (session_id, token)
-        )
+        conn.execute('UPDATE mappings SET status=? WHERE session_id=? AND token=?',
+                     (status, session_id, token))
+
+
+def save_places(db_path, session_id: str, places):
+    """places: [(fingerprint of the anonymized place, [(token, original form), ...])]."""
+    with get_conn(db_path) as conn:
+        conn.executemany('INSERT OR REPLACE INTO places (session_id, place_hash, items) VALUES (?,?,?)',
+                         [(session_id, h, json.dumps(items, ensure_ascii=False)) for h, items in places])
+
+
+def get_places(db_path, session_id: str) -> dict:
+    with get_conn(db_path) as conn:
+        rows = conn.execute('SELECT place_hash, items FROM places WHERE session_id=?', (session_id,)).fetchall()
+    return {r['place_hash']: [tuple(x) for x in json.loads(r['items'])] for r in rows}
 
 
 def update_mapping(db_path, session_id: str, token: str, data: dict):
@@ -353,8 +400,8 @@ def get_reverse_info(db_path, session_id: str) -> dict:
     """{token: (value, edited_by_user)}."""
     with get_conn(db_path) as conn:
         rows = conn.execute(
-            'SELECT token, original_form, canonical_form, canonical_edited '
-            'FROM mappings WHERE session_id=? ORDER BY id',
+            "SELECT token, original_form, canonical_form, canonical_edited, status "
+            "FROM mappings WHERE session_id=? ORDER BY (status='active') DESC, id",
             (session_id,)
         ).fetchall()
     out = {}
@@ -443,9 +490,38 @@ def get_exclusions(db_path, session_id: str) -> set:
                 'SELECT original_form, entity_type FROM exclusions WHERE session_id=?',
                 (session_id,)
             ).fetchall()
-            return {(r['original_form'], r['entity_type']) for r in rows}
+            return ExclusionSet((r['original_form'], r['entity_type']) for r in rows)
         except Exception:
-            return set()
+            return ExclusionSet()
+
+
+class ExclusionSet(set):
+    """Values the user marked «не маскировать». `(value, type) in excl` matches every form
+    of the same entity — another case of the name, another spelling of the company —
+    not only the exact string, so an excluded entity is never re-detected."""
+
+    def __init__(self, items=()):
+        super().__init__(items)
+        self._keys = None
+
+    def __contains__(self, item):
+        if set.__contains__(self, item):
+            return True
+        try:
+            value, etype = item
+        except (TypeError, ValueError):
+            return False
+        if self._keys is None:
+            from core.entities import value_key
+            self._keys = {(t, value_key(v, t)) for v, t in set.__iter__(self)}
+        from core.entities import value_key, Person
+        if (etype, value_key(value, etype)) in self._keys:
+            return True
+        if etype == 'ФИО':
+            me = Person.parse(value)
+            return any(t == 'ФИО' and (me.surname or me.name) and Person.parse(v).compatible(me)
+                       and Person.parse(v).specificity() >= 2 for v, t in set.__iter__(self))
+        return False
 
 
 def delete_session_exclusions(db_path, session_id: str):

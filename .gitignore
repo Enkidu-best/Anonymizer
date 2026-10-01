@@ -39,3 +39,6 @@ tests/bench/fails.json
 *.bundle
 *.tar.gz
 private/
+
+# Journal (no personal data, but local only)
+logs/

@@ -28,6 +28,16 @@ def _left(text, pos, n=60):
     return text[max(0, pos - n):pos]
 
 
+def _line_left(text, pos, extra_lines=0):
+    """Text from the start of the current line (plus N lines before) up to pos."""
+    start = pos
+    for _ in range(extra_lines + 1):
+        start = text.rfind('\n', 0, max(start - 1, 0) if start != pos else start)
+        if start < 0:
+            return text[:pos]
+    return text[start + 1:pos]
+
+
 def _ctx(regex, text, pos, n=60):
     return bool(regex.search(_left(text, pos, n)))
 
@@ -55,9 +65,11 @@ def _numeric(text: str) -> List[Hit]:
         if text[e:e + 1] in ',.' and text[e + 1:e + 2].isdigit():
             continue  # decimal number
         left = _left(text, s, 60)
-        round_amount = re.search(r'0000$', d) and not _INN_CTX.search(left)
+        line = _line_left(text, s)            # guards look only at their own line / cell
+        near = _line_left(text, s, 1)         # own line + the line (cell) just before
+        round_amount = re.search(r'0000$', d) and not _INN_CTX.search(near[-60:])
         if n in (10, 12) and V.inn(d) and not round_amount:
-            if _ctx(_PASSPORT_CTX, text, s, 25) or _ctx(_PHONE_CTX, text, s, 25):
+            if _PASSPORT_CTX.search(line[-25:]) or _PHONE_CTX.search(line[-25:]):
                 continue
             hits.append(Hit(s, e, 'ИНН'))
             inn_ends.append(e)
@@ -143,7 +155,8 @@ def _swift(text):
 # ── Phones ───────────────────────────────────────────────────────────────────
 
 _PHONE_RU = re.compile(
-    r'(?<![\d\w+])(?:\+7|8)[ \-]?\(?\d{3}\)?[ \-]?\d{3}[ \-]?\d{2}[ \-]?\d{2}(?!\d)')
+    r'(?<![\d\w+])(?:\+7|8)[ \-]?(?:\(?\d{3}\)?[ \-]?\d{3}[ \-]?\d{2}[ \-]?\d{2}'
+    r'|\(\d{4}\)[ \-]?\d{2}[ \-]?\d{2}[ \-]?\d{2}|\(\d{5}\)[ \-]?\d[ \-]?\d{2}[ \-]?\d{2})(?!\d)')
 _PHONE_INTL = re.compile(
     r'(?<![\d\w])\+(?!7)\d{1,3}(?:[ \t\u00a0\-]?\(?\d{1,4}\)?){1,2}(?:[ \t\u00a0\-]?\d{2,4}){2,4}(?!\d)')
 _PHONE_LOCAL = re.compile(
@@ -360,8 +373,10 @@ def _realty(text: str) -> List[Hit]:
 
 # ── Numbers right after their keyword, even with OCR noise / bad checksum ────
 
-_KW_NUM = re.compile(r'(?<![\wА-Яа-я])(ОГРНИП|ОГРН|ИНН|КПП|БИК)[^\S\n]*[:№]?[^\S\n]*(\d[\d ]{7,19}\d)(?!\d)')
-_KW_LEN = {'ОГРН': (13, 13), 'ОГРНИП': (15, 15), 'ИНН': (10, 12), 'КПП': (9, 9), 'БИК': (9, 9)}
+# keyword and number may sit in neighbouring table cells (one line break between them)
+_KW_NUM = re.compile(r'(?<![\wА-Яа-я])(ОГРНИП|ОГРН|ИНН|КПП|БИК)(?![А-Яа-я])[^\S\n]*[:№]?[^\S\n]*\n?[^\S\n]*(\d[\d ]{7,19}\d)(?!\d)')
+# after OCR a digit may be lost or added: right after its keyword 11-15 digits still mean ОГРН
+_KW_LEN = {'ОГРН': (11, 15), 'ОГРНИП': (13, 15), 'ИНН': (10, 12), 'КПП': (9, 9), 'БИК': (9, 9)}
 
 
 def _keyword_numbers(text: str) -> List[Hit]:
@@ -636,7 +651,7 @@ def _persons(text: str) -> List[Hit]:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-DETECTORS = [_passport, _realty, _keyword_numbers, _company_reg, _phones, _grouped_numbers, _spaced_numbers, _numeric, _swift, _birth,
+DETECTORS = [_passport, _realty, _keyword_numbers, _company_reg, _grouped_numbers, _spaced_numbers, _phones, _numeric, _swift, _birth,
              _cadastral, _other, _addresses, _orgs, _persons]
 
 

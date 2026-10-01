@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+# tests never write into the owner's journal
+os.environ.setdefault('ANONYMIZER_LOG_DIR', tempfile.mkdtemp(prefix='anon_logs_'))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

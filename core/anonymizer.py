@@ -17,6 +17,7 @@ from typing import Tuple, Dict, List
 
 from core.db import get_or_create_token, get_session_mappings, get_top_patterns
 from core.detectors import _is_payment_bank
+from core.lexicon import not_pii
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +267,7 @@ def _apply_opf_pass(text: str, db_path, session_id: str,
             inner = m.group(2).strip()
             if len(inner) < 2 or _is_bracketed_token(inner) or _contains_token(inner):
                 continue
-            if _is_payment_bank(text, m.start()):
+            if _is_payment_bank(text, m.start()) or not_pii(inner, 'ЮЛ'):
                 continue
             all_matches.append((m.start(2), m.end(2), inner))
 
@@ -787,6 +788,8 @@ def _apply_regex_pass(text: str, db_path, session_id: str,
                 return
         if etype == 'АДРЕС' and len(value) < 5:
             return
+        if etype in ('ФИО', 'ЮЛ') and not_pii(value, etype):
+            return   # role of a party, job title, heading, public body (core/lexicon.py)
         if etype == 'URL' and _PUBLIC_LEGAL_URL.search(value):
             return   # links to public legal databases are not PII
         if _contains_token(value) or _contains_token(text[max(0, s - 1):e + 1]):
@@ -909,6 +912,9 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
                 continue
 
         if exclusions and (original, etype) in exclusions:
+            continue
+        if not_pii(original, etype):
+            rejected['fio_filter' if etype == 'ФИО' else 'org_filter'] += 1
             continue
 
         # canonical_form: nominative for FIO via pymorphy3, identical for ORG
@@ -1082,6 +1088,7 @@ def anonymize_text_pipeline(
     session_id: str,
     use_spacy: bool = True,
     use_llm: bool = False,
+    llm_only: bool = False,
 ) -> Tuple[str, Dict[str, str]]:
     """
     Sequential pipeline. Each layer receives text with already-substituted
@@ -1089,51 +1096,50 @@ def anonymize_text_pipeline(
 
     Returns: (anonymized_text, all_replacements_dict)
     all_replacements_dict = {original_form: "[TOKEN]"}
+    Every layer is a journal stage with its duration and the number of finds per type.
     """
     from core.db import get_exclusions
+    from core import log
     exclusions = get_exclusions(db_path, session_id)
-
     all_reps: Dict[str, str] = {}
+    job = log.current_job()
 
-    # Pass 0: globally-learned entities from prior sessions
-    text, reps0 = _apply_global_known(text, db_path, session_id, exclusions)
-    all_reps.update(reps0)
+    def run(name, fn, *args):
+        nonlocal text
+        with log.stage(name):
+            text, reps = fn(text, *args)
+        all_reps.update(reps)
+        by_type: Dict[str, int] = {}
+        for tok in set(reps.values()):
+            p = tok.strip('[]').rsplit('_', 1)[0]
+            by_type[p] = by_type.get(p, 0) + 1
+        if by_type:
+            log.event('layer', layer=name, found=by_type)
+            if job:
+                job.add(**{f'{name}.{k}': v for k, v in by_type.items()})
 
-    # Pass 1: OPF + Regex
-    text, reps1 = _apply_opf_pass(text, db_path, session_id, exclusions)
-    text, reps2 = _apply_regex_pass(text, db_path, session_id, exclusions)
-    all_reps.update(reps1)
-    all_reps.update(reps2)
-
-    # Pass 2: spaCy NER on already partially masked text
-    if use_spacy:
-        text, reps3 = _apply_spacy_pass(text, db_path, session_id, exclusions)
-        all_reps.update(reps3)
-
-    # Pass 3: LLM on text after regex+spaCy
-    if use_llm:
-        try:
-            from core.llm import apply_llm_pass
-            user_patterns = get_top_patterns(db_path, limit=20)
-            print(f'[LLM] Loaded {len(user_patterns)} user patterns')
-            text, reps4 = apply_llm_pass(text, db_path, session_id,
-                                          user_patterns, exclusions)
-            all_reps.update(reps4)
-        except Exception as ex:
-            print(f'[LLM] Pass failed: {ex}')
-
-    # Companies: abbreviation in brackets after a name, distinctive words of names elsewhere
-    text, reps_org = _propagate_orgs(text, db_path, session_id, exclusions)
-    all_reps.update(reps_org)
-
-    # Propagation: surnames of found persons in any case form, anywhere in the text
-    text, reps_prop = _propagate_surnames(text, db_path, session_id, exclusions)
-    all_reps.update(reps_prop)
-
-    # Final pass: apply known DB entries
-    text, reps_known = _apply_known_entities(text, db_path, session_id)
-    all_reps.update(reps_known)
-
+    if not llm_only:
+        run('known_global', _apply_global_known, db_path, session_id, exclusions)
+        # values already found in this session (earlier files, manual additions) go first:
+        # later layers must not cut them into pieces
+        run('known_session_first', _apply_known_entities, db_path, session_id)
+        run('opf', _apply_opf_pass, db_path, session_id, exclusions)
+        run('rules', _apply_regex_pass, db_path, session_id, exclusions)
+        if use_spacy:
+            run('spacy', _apply_spacy_pass, db_path, session_id, exclusions)
+    if use_llm or llm_only:
+        def _llm(t, *a):
+            try:
+                from core.llm import apply_llm_pass
+                return apply_llm_pass(t, db_path, session_id, get_top_patterns(db_path, limit=20), exclusions)
+            except Exception as ex:
+                log.error('llm_pass_failed', ex)
+                return t, {}
+        run('llm', _llm)
+    if not llm_only:
+        run('propagate_orgs', _propagate_orgs, db_path, session_id, exclusions)
+        run('propagate_surnames', _propagate_surnames, db_path, session_id, exclusions)
+    run('known_session', _apply_known_entities, db_path, session_id)
     return text, all_reps
 
 
@@ -1187,47 +1193,79 @@ def apply_spans(text: str, spans) -> str:
     return ''.join(out)
 
 
-def make_finder(replacements: Dict[str, str], log: list = None):
-    """find(text) → [(start, end, token)]; with log, records (token, original) in order."""
+def place_hash(anonymized_text: str) -> str:
+    """Fingerprint of an anonymized place (paragraph, cell, page): whitespace collapsed,
+    tokens in canonical form — so «[fio 1]» written by an LLM still matches «[FIO_1]»."""
+    import hashlib
+    t = TOKEN_LOOSE_RE.sub(lambda m: f'[{_token_key(m)}]', anonymized_text)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return hashlib.sha1(t.encode('utf-8')).hexdigest()
+
+
+def make_finder(replacements: Dict[str, str], log: list = None, places: list = None):
+    """find(text) → [(start, end, token)].
+
+    log    — receives (token, original) in document order (preview «show originals»);
+    places — receives (fingerprint of the anonymized place, [(token, original), …]) so that
+             restore can give every place its exact forms."""
     def find(text):
-        spans = replace_spans(text, replacements)
+        spans = sorted(replace_spans(text, replacements))
+        items = [(v.strip('[]'), text[a:b]) for a, b, v in spans]
         if log is not None:
-            log.extend((v.strip('[]'), text[a:b]) for a, b, v in sorted(spans))
+            log.extend(items)
+        if places is not None and items:
+            places.append((place_hash(apply_spans(text, spans)), items))
         return spans
     return find
 
 
 def make_rev_finder(db_path, session_id: str, occurrences: dict = None):
-    """find(text) → [(start, end, original)]. The k-th occurrence of a token gets the
-    k-th recorded form of the original file (exact case); otherwise the main form."""
-    from core.db import get_reverse_info
+    """find(text) → [(start, end, original)], restoring by place.
+
+    A place whose anonymized text is unchanged (same fingerprint) gets the exact forms
+    recorded for it, whatever order or file it comes in. Other places (text written by
+    an external LLM) get the main form; persons/companies there are counted in
+    stats['check_case']. Tokens unknown to the session go to stats['unknown'].
+    Mappings marked «не маскировать» or replaced still restore (never deleted)."""
+    from core.db import get_reverse_info, get_places
     info = get_reverse_info(db_path, session_id)
-    occ = occurrences or {}
-    seen: Dict[str, int] = {}
+    places = get_places(db_path, session_id)
+    stats = {'tokens': 0, 'restored': 0, 'exact': 0, 'check_case': 0, 'unknown': []}
 
     def find(text):
         out = []
-        for m in TOKEN_LOOSE_RE.finditer(text):
+        matches = list(TOKEN_LOOSE_RE.finditer(text))
+        if not matches:
+            return out
+        items = places.get(place_hash(text))
+        for k, m in enumerate(matches):
             key = _token_key(m)
+            stats['tokens'] += 1
             if key not in info:
+                if key not in stats['unknown']:
+                    stats['unknown'].append(key)
                 continue
             value, edited = info[key]
-            k = seen.get(key, 0)
-            seen[key] = k + 1
-            forms = occ.get(key)
-            if forms and not edited and k < len(forms):
-                value = forms[k]
+            if items and k < len(items) and items[k][0] == key:
+                value = items[k][1]            # exact form of this very place
+                stats['exact'] += 1
+            elif key.split('_')[0] in ('FIO', 'YUL', 'ADR'):
+                stats['check_case'] += 1       # new text: main form, the case may differ
+            stats['restored'] += 1
             out.append((m.start(), m.end(), value))
         return out
+    find.stats = stats
     return find
 
 
 def anonymize_text(text: str, db_path, session_id: str, use_spacy: bool = True,
                    use_llm: bool = False):
     """Plain-text anonymization. Returns (masked_text, occurrences {token: [forms]})."""
+    from core.db import save_places
     _, reps = anonymize_text_pipeline(text, db_path, session_id, use_spacy=use_spacy, use_llm=use_llm)
-    log = []
-    out = apply_spans(text, make_finder(reps, log)(text))
+    log, places = [], []
+    out = apply_spans(text, make_finder(reps, log, places)(text))
+    save_places(db_path, session_id, places)
     occ: Dict[str, list] = {}
     for tok, orig in log:
         occ.setdefault(tok, []).append(orig)
@@ -1235,7 +1273,7 @@ def anonymize_text(text: str, db_path, session_id: str, use_spacy: bool = True,
 
 
 def restore_text(text: str, db_path, session_id: str, occurrences: dict = None) -> str:
-    return apply_spans(text, make_rev_finder(db_path, session_id, occurrences)(text))
+    return apply_spans(text, make_rev_finder(db_path, session_id)(text))
 
 
 def apply_reverse(text: str, reverse_map: dict) -> str:

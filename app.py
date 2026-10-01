@@ -70,6 +70,29 @@ _purge_old_uploads()
 from core.db import init_db
 init_db(DB_PATH)
 
+# ── Journal (no personal data) ───────────────────────────────────────────────
+from core import log as journal
+journal.setup(journal.default_dir(getattr(sys, 'frozen', False), Path(__file__).parent))
+
+
+def _startup_journal():
+    info = {}
+    try:
+        import subprocess as _sp
+        from core.llm import check_ollama
+        st = check_ollama()
+        info = {'ollama': st.get('available'), 'models': st.get('models')}
+        v = _sp.run(['ollama', '--version'], capture_output=True, text=True, timeout=5)
+        info['ollama_version'] = (v.stdout or v.stderr).strip().split()[-1] if v.returncode == 0 else None
+        ps = _sp.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+        info['ollama_ps'] = [' '.join(l.split()) for l in ps.stdout.splitlines()[1:]]
+    except Exception:
+        pass
+    journal.startup_info(APP_VERSION, info)
+
+
+threading.Thread(target=_startup_journal, daemon=True).start()
+
 # ── Start NER loading in background ──────────────────────────────────────────
 from core.anonymizer import start_ner_loading
 start_ner_loading()
@@ -212,6 +235,7 @@ def create_session_route():
     data = request.get_json(force=True, silent=True) or {}
     name = data.get('name', '').strip() or f'Сессия {uuid.uuid4().hex[:6].upper()}'
     sid  = create_session(DB_PATH, name)
+    journal.event('session_create', session=sid[:8])
     return jsonify({'id': sid, 'name': name}), 201
 
 
@@ -219,6 +243,7 @@ def create_session_route():
 def delete_session(sid):
     from core.db import delete_session as db_delete_session
     db_delete_session(DB_PATH, sid)
+    journal.event('session_delete', session=sid[:8])
     session_dir = UPLOADS_DIR / sid
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
@@ -228,7 +253,8 @@ def delete_session(sid):
 @app.route('/api/sessions/<sid>/mappings', methods=['GET'])
 def session_mappings(sid):
     from core.db import get_session_mappings
-    return jsonify(get_session_mappings(DB_PATH, sid))
+    # ?all=1 adds the archive: entries marked «не маскировать» or replaced (kept for old files)
+    return jsonify(get_session_mappings(DB_PATH, sid, include_inactive=request.args.get('all') == '1'))
 
 
 @app.route('/api/sessions/<sid>/mappings/<token>', methods=['DELETE'])
@@ -236,9 +262,13 @@ def delete_mapping_route(sid, token):
     from core.db import delete_mapping, get_session_mappings, add_exclusion
     mappings = get_session_mappings(DB_PATH, sid)
     m = next((x for x in mappings if x['token'] == token), None)
-    if m:
-        add_exclusion(DB_PATH, sid, m['original_form'], m['entity_type'])
-    delete_mapping(DB_PATH, sid, token)
+    # every form of this entity («Иванов», «Иванову П.С.») is excluded, not only the first row
+    for x in mappings:
+        if x['token'] == token:
+            add_exclusion(DB_PATH, sid, x['original_form'], x['entity_type'])
+    delete_mapping(DB_PATH, sid, token)    # marks «не маскировать», values kept for old files
+    from core import log
+    log.event('mapping_edit', token=token, action='exclude')
     return jsonify({'ok': True})
 
 
@@ -254,12 +284,23 @@ def update_mapping_route(sid, token):
     new_original  = (data.get('original_form',  old['original_form'])).strip()
     new_canonical = (data.get('canonical_form', old['canonical_form'])).strip()
     new_type      = (data.get('entity_type',    old['entity_type'])).strip()
+    from core.db import update_mapping, retire_mapping
+    from core import log
+    if new_original == old['original_form'] and new_type == old['entity_type']:
+        # only the base form changed: same token, nothing to re-detect
+        if new_canonical != old['canonical_form']:
+            update_mapping(DB_PATH, sid, token, {'canonical_form': new_canonical})
+        log.event('mapping_edit', token=token, action='canonical')
+        remember_entity(DB_PATH, new_original, new_type)
+        return jsonify({'ok': True, 'new_token': token})
+    # value or type changed: the old token is retired (kept to restore earlier files)
     if new_original != old['original_form']:
         add_exclusion(DB_PATH, sid, old['original_form'], old['entity_type'])
-    delete_mapping(DB_PATH, sid, token)
+    retire_mapping(DB_PATH, sid, token)
     edited = bool(old.get('canonical_edited')) or new_canonical != old['canonical_form']
     new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type,
                                     canonical_edited=edited)
+    log.event('mapping_edit', token=token, action='replace', new_token=new_token)
     # User explicitly confirmed this entity — remember globally for future sessions
     remember_entity(DB_PATH, new_original, new_type)
     return jsonify({'ok': True, 'new_token': new_token})
@@ -282,7 +323,7 @@ def add_mapping_route(sid):
     if not original:
         return jsonify({'error': 'original_form или canonical_form обязательны'}), 400
     token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type,
-                                canonical_edited=edited)
+                                canonical_edited=edited, manual=True)
     # Manually added → strong signal this is real PII. Cross-session learn.
     remember_entity(DB_PATH, original, entity_type)
     return jsonify({'token': token, 'original_form': original,
@@ -327,13 +368,14 @@ def reprocess_session(sid):
             prev = _manifest(session_dir).get(input_file.name, {}).get('anonymize')
             if prev and (output_dir / prev).exists():
                 (output_dir / prev).unlink()
-            r = process_uploaded_file(
-                input_path=input_file,
-                output_dir=output_dir,
-                session_id=sid,
-                db_path=DB_PATH,
-                mode='anonymize',
-            )
+            with journal.Job('reprocess', session=sid[:8], ext=input_file.suffix.lower()):
+                r = process_uploaded_file(
+                    input_path=input_file,
+                    output_dir=output_dir,
+                    session_id=sid,
+                    db_path=DB_PATH,
+                    mode='anonymize',
+                )
             _remember_output(session_dir, input_file.name, 'anonymize', r['output_filename'])
             results.append({'filename': input_file.name, 'status': 'ok',
                             'output': r['output_filename'], 'leaks': r.get('leaks')})
@@ -385,13 +427,16 @@ def process():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
-    for f in files:
+    for n, f in enumerate(files, 1):
         if not f.filename:
             continue
         from core.handlers import safe_upload_name
         src = in_dir / safe_upload_name(f.filename)
         f.save(str(src))
         try:
+          # file number in the request, type and size only — the name may contain a company name
+          with journal.Job(mode, session=sid[:8], file_no=n, ext=src.suffix.lower(),
+                           size_kb=round(src.stat().st_size / 1024), spacy=use_spacy, llm=use_llm) as job:
             r = process_uploaded_file(
                 input_path=src,
                 output_dir=out_dir,
@@ -401,6 +446,7 @@ def process():
                 use_spacy=use_spacy,
                 use_llm=use_llm,
             )
+            r['job'] = job.id
             out_name = r['output_filename']
             _remember_output(session_dir, src.name, mode, out_name)
             results.append({'filename': f.filename,
@@ -408,8 +454,11 @@ def process():
                              'status':   'ok',
                              'entities_found': r.get('entities_found', 0),
                              'leaks': r.get('leaks'),
+                             'restore': r.get('restore'),
+                             'job': r.get('job'),
                              'note': r.get('note')})
         except Exception as ex:
+            journal.error('process_failed', ex, file_no=n)
             results.append({'filename': f.filename,
                              'status':  'error',
                              'error':   str(ex)})
@@ -541,8 +590,35 @@ def download_file(sid, filename):
     file_path = UPLOADS_DIR / sid / 'output' / filename
     if not file_path.exists():
         return jsonify({'error': 'Файл не найден'}), 404
+    journal.event('download', session=sid[:8], ext=file_path.suffix.lower(),
+                  size_kb=round(file_path.stat().st_size / 1024))
     return send_file(str(file_path), as_attachment=True,
                      download_name=filename)
+
+
+# ── Journal ───────────────────────────────────────────────────────────────────
+@app.route('/api/logs')
+def logs_info():
+    return jsonify({'dir': str(journal.LOG_DIR), 'verbose': journal.VERBOSE,
+                    'stale_jobs': journal.stale_jobs()})
+
+
+@app.route('/api/logs/open', methods=['POST'])
+def logs_open():
+    import subprocess
+    opener = 'open' if sys.platform == 'darwin' else ('explorer' if sys.platform == 'win32' else 'xdg-open')
+    try:
+        subprocess.Popen([opener, str(journal.LOG_DIR)])
+    except OSError as ex:
+        return jsonify({'error': str(ex), 'dir': str(journal.LOG_DIR)}), 500
+    return jsonify({'ok': True, 'dir': str(journal.LOG_DIR)})
+
+
+@app.route('/api/logs/verbose', methods=['POST'])
+def logs_verbose():
+    on = bool((request.get_json(force=True, silent=True) or {}).get('on'))
+    journal.set_verbose(on)
+    return jsonify({'verbose': journal.VERBOSE})
 
 
 # ── Download all files as ZIP ─────────────────────────────────────────────────

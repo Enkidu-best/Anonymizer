@@ -108,3 +108,24 @@ def test_docx_title_and_subject_cleared(tmp_path, tmp_db, session_id):
     r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
     props = Document(tmp_path / 'a' / r['output_filename']).core_properties
     assert not props.title and not props.subject
+
+
+def test_value_across_paragraphs_is_masked_in_every_part(tmp_path, tmp_db, session_id):
+    """A found value spanning two paragraphs (a heading broken in two lines) is masked in
+    both parts — before, the part could stay in the file while the leak check said «clean»."""
+    from docx import Document
+    from core.db import get_or_create_token
+    src = tmp_path / 'head.docx'
+    d = Document()
+    d.add_paragraph('Многоотраслевой')
+    d.add_paragraph('  Центр Недвижимости Примерска')
+    d.add_paragraph('Договор оказания услуг')
+    d.save(src)
+    # what an LLM / NER layer may produce: one value across the paragraph break
+    get_or_create_token(tmp_db, session_id, 'Многоотраслевой\n  Центр Недвижимости Примерска',
+                        'Многоотраслевой Центр Недвижимости Примерска', 'ЮЛ')
+    (tmp_path / 'a').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
+    text = '\n'.join(p.text for p in Document(tmp_path / 'a' / r['output_filename']).paragraphs)
+    assert 'Многоотраслевой' not in text and 'Центр Недвижимости Примерска' not in text, text
+    assert 'Договор оказания услуг' in text

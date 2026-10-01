@@ -268,6 +268,17 @@ def _ollama_generate(prompt: str, system: str,
 # Main LLM pass
 # ─────────────────────────────────────────────────────────────────────────────
 
+_BIRTH_CTX = re.compile(r'рожд|г\.\s*р\.|родил|born|date\s+of\s+birth|DOB', re.IGNORECASE)
+
+
+def _birth_context(text: str, value: str) -> bool:
+    """A date is a date of birth only with birth words within 40 characters of it."""
+    for m in re.finditer(re.escape(value), text):
+        if _BIRTH_CTX.search(text[max(0, m.start() - 40):m.end() + 40]):
+            return True
+    return False
+
+
 def apply_llm_pass(text: str, db_path, session_id: str,
                    user_patterns=None,
                    exclusions: set = None) -> Tuple[str, dict]:
@@ -336,6 +347,11 @@ def apply_llm_pass(text: str, db_path, session_id: str,
 
             if exclusions and (original, internal_type) in exclusions:
                 continue
+            from core.lexicon import not_pii
+            if not_pii(original, internal_type):
+                continue   # roles, positions, headings, public bodies are never masked
+            if internal_type in ('ДАТАРОЖД', 'DOB') and not _birth_context(text, original):
+                continue   # dates of terms, contracts, registration are not personal data
 
             token     = get_or_create_token(db_path, session_id,
                                              original, original, internal_type)

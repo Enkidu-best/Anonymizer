@@ -119,22 +119,35 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
     out_ext = '.png' if ext in ('.heic', '.bmp', '.webp') else ext
 
     try:
-        from core.db import save_occurrences, get_occurrences
+        from core.db import save_occurrences, save_places
+        from core import log
         tmp_out = output_dir / f'.tmp_{session_id[:8]}{out_ext}'
         if mode == 'anonymize':
-            _LOG.clear()
-            result = _anonymize(src, tmp_out, ext, session_id, db_path, use_spacy, use_llm)
-            occ = list(_LOG)
+            _STATE.log, _STATE.places, _STATE.reps = [], [], {}
+            with log.stage('process'):
+                result = _anonymize(src, tmp_out, ext, session_id, db_path, use_spacy, use_llm)
             name = f'{anonymize_filename(stem, session_id, db_path)}_anon{out_ext}'
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
-            save_occurrences(db_path, session_id, final.name, occ)
-            result['leaks'] = leak_check(final, session_id, db_path)
+            save_occurrences(db_path, session_id, final.name, _STATE.log)
+            save_places(db_path, session_id, _STATE.places)
+            with log.stage('verify'):
+                not_applied = _verify_written(final)
+            if not_applied:
+                result['apply_errors'] = not_applied
+                log.error('replacement_not_applied', count=not_applied, ext=ext)
+            with log.stage('leak_check'):
+                result['leaks'] = leak_check(final, session_id, db_path)
+            log.event('anonymized', ext=ext, places=len(_STATE.places), tokens=len(_STATE.log),
+                      leaks=len(result['leaks']))
         else:
             from core.anonymizer import restore_text
-            _OCC.clear()
-            _OCC.update(get_occurrences(db_path, session_id, safe_upload_name(input_path.name)))
-            result = _deanonymize(src, tmp_out, ext, session_id, db_path)
+            with log.stage('restore'):
+                result = _deanonymize(src, tmp_out, ext, session_id, db_path)
+            stats = getattr(_STATE, 'rev', None)
+            result['restore'] = dict(stats.stats) if stats else {}
+            log.event('restored', ext=ext, **{k: (len(v) if isinstance(v, list) else v)
+                                               for k, v in result['restore'].items()})
             name = f'{restore_text(stem, db_path, session_id)}_restored{out_ext}'
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
@@ -211,20 +224,54 @@ def _detect(text, session_id, db_path, use_spacy, use_llm):
     return reps
 
 
-# Per-call state: forms recorded while anonymizing / forms to restore while deanonymizing.
-# Requests are processed one file at a time (Flask dev server, single worker).
-_LOG: list = []
-_OCC: dict = {}
+# Per-request state (Flask serves requests in threads): forms recorded while
+# anonymizing, the restore finder (with its statistics) while deanonymizing.
+import threading as _threading
+_STATE = _threading.local()
+
+
+def _split_lines(reps: dict) -> dict:
+    """A value found across a line/paragraph break («Многоотраслевой\\n Центр …») can't be
+    replaced inside one paragraph — every line of it gets the same token."""
+    out = dict(reps)
+    for k, v in reps.items():
+        if '\n' in k:
+            for part in k.split('\n'):
+                part = part.strip()
+                if len(part) >= 3:
+                    out.setdefault(part, v)
+    return out
 
 
 def _finder(reps):
     from core.anonymizer import make_finder
-    return make_finder(reps, _LOG)
+    reps = _split_lines(reps)
+    _STATE.reps = reps
+    return make_finder(reps, getattr(_STATE, 'log', None), getattr(_STATE, 'places', None))
+
+
+def _verify_written(path: Path) -> int:
+    """Read the written file back: a found value that is still there means a replacement
+    was not applied — an error to show, never a silent skip."""
+    from core.extract import extract_text
+    from core.anonymizer import replace_spans
+    reps = getattr(_STATE, 'reps', None) or {}
+    if not reps or path.suffix.lower() in IMAGE_EXT:
+        return 0
+    try:
+        text = extract_text(path)
+    except Exception:
+        return 0
+    flat = re.sub(r'[ \t\xa0]+', ' ', text)
+    left = {k for k in reps if len(k.strip()) >= 3 and (replace_spans(text, {k: 'x'})
+                                                         or replace_spans(flat, {re.sub(r'\s+', ' ', k).strip(): 'x'}))}
+    return len(left)
 
 
 def _rev_finder(session_id, db_path):
     from core.anonymizer import make_rev_finder
-    return make_rev_finder(db_path, session_id, dict(_OCC))
+    _STATE.rev = make_rev_finder(db_path, session_id)
+    return _STATE.rev
 
 
 def _anonymize(src, out, ext, session_id, db_path, use_spacy, use_llm):
@@ -287,9 +334,11 @@ def leak_check(path: Path, session_id: str, db_path) -> list:
     except Exception:
         return []
     leaks = []
+    flat = re.sub(r'\s+', ' ', text)
     for m in get_session_mappings(db_path, session_id):
         v = m['original_form']
-        if len(v) > 3 and contains_bounded(text, v):
+        variants = [v, re.sub(r'\s+', ' ', v).strip()] + [p.strip() for p in v.split('\n') if len(p.strip()) >= 4]
+        if len(v) > 3 and any(contains_bounded(text, x) or contains_bounded(flat, x) for x in variants):
             leaks.append({'type': m['entity_type'], 'value': v, 'reason': 'исходное значение'})
     seen = {l['value'] for l in leaks}
     for h in find_all(text):
