@@ -387,3 +387,32 @@ def test_no_garbage_fio_or_org_in_real_docx(page, server, tmp_path):
     }
     bad = [r for r in rows if r in garbage]
     assert not bad, f'False positives still present after pipeline: {bad}'
+
+
+def test_preview_and_auto_session_name(page, server, tmp_path):
+    """Process a fictional contract, open «Просмотр»: tokens highlighted, leak check
+    shown, original value on toggle; default session name becomes «file · date»."""
+    from docx import Document
+    from tests.test_holdout_contract import CONTRACT
+    src = tmp_path / 'Договор_проверка.docx'
+    doc = Document()
+    for line in CONTRACT.split('\n'):
+        doc.add_paragraph(line)
+    doc.save(src)
+    _make_session(page, 'Сессия 01.10.26')
+    _upload_file_path(page, src)
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    page.click('.btn-pv')
+    page.wait_for_selector('#pvOverlay:not(.hidden) .tok')
+    assert page.locator('#pvBody .tok').count() > 10
+    assert 'Белозёров' not in page.inner_text('#pvBody')
+    expect(page.locator('#pvLeak .pv-leak.ok')).to_be_visible()
+    page.check('#pvOrig')
+    assert 'Белозёров' in page.inner_text('#pvBody')
+    assert 'А.Л. Белозёров' in page.inner_text('#pvBody')   # exact form of the signature
+    page.wait_for_timeout(400)   # let the open animation finish
+    page.screenshot(path=str(Path(os.environ.get('PV_SHOT', tmp_path)) / 'preview.png'))
+    page.keyboard.press('Escape')
+    names = page.evaluate("async () => (await (await fetch('/api/sessions')).json()).map(s => s.name)")
+    assert any(n.startswith('Договор_проверка · ') for n in names), names

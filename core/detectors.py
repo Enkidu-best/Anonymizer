@@ -55,7 +55,8 @@ def _numeric(text: str) -> List[Hit]:
         if text[e:e + 1] in ',.' and text[e + 1:e + 2].isdigit():
             continue  # decimal number
         left = _left(text, s, 60)
-        if n in (10, 12) and V.inn(d):
+        round_amount = re.search(r'0000$', d) and not _INN_CTX.search(left)
+        if n in (10, 12) and V.inn(d) and not round_amount:
             if _ctx(_PASSPORT_CTX, text, s, 25) or _ctx(_PHONE_CTX, text, s, 25):
                 continue
             hits.append(Hit(s, e, 'ИНН'))
@@ -406,8 +407,13 @@ def _other(text):
 
 # ── Legal entities without quotes / foreign ──────────────────────────────────
 
+# Legal form at the start of a line (lists of shareholders, slides): the name is the
+# rest of the line up to «–», «,», «(», a percentage or the line end — not just 1-2 words
+_OPF_LINE = re.compile(
+    r'(?m)^[^\S\n]*(?:[-•–·*]\s*)?(?:ООО|АО|ПАО|ЗАО|ОАО|НАО|ОсОО|ТОО|ЖШС|ЧП|ГК)[^\S\n]+(?![«"“„])'
+    r'([А-ЯЁA-Z0-9][^\n–—,;(«"“%]{1,80}?)[^\S\n]*(?=[–—,;(]|\d+[,.]?\d*[^\S\n]*%|$)', re.UNICODE)
 _OPF_BARE = re.compile(
-    r'(?<![\wА-Яа-я])(?:ООО|ПАО|АО|ЗАО|ОАО|НАО|ГК)[^\S\n]+'
+    r'(?<![\wА-Яа-я])(?:ООО|ПАО|АО|ЗАО|ОАО|НАО|ГК|ОсОО|ТОО)[^\S\n]+'
     r'([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:[^\S\n]+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+)?)', _U)
 _OPF_TAIL = re.compile(
     r'(?<![\wА-Яа-я«"])((?:[Бб]анк[^\S\n]+)?[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:[^\S\n]+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+){0,2})'
@@ -450,7 +456,7 @@ def _is_payment_bank(text, start):
 
 def _orgs(text: str) -> List[Hit]:
     hits = []
-    for rx in (_OPF_BARE, _OPF_TAIL, _GENERIC_ORG_QUOTED):
+    for rx in (_OPF_LINE, _OPF_BARE, _OPF_TAIL, _GENERIC_ORG_QUOTED):
         for m in rx.finditer(text):
             name = m.group(1)
             if name.lower() in _NOT_ORG_NAME:

@@ -254,6 +254,35 @@ tr:hover td{background:var(--card2)}
 .t-ADR{background:rgba(20,184,166,.12);color:#2dd4bf}
 .t-LIC{background:rgba(239,68,68,.12);color:#f87171}
 .t-URL{background:rgba(14,165,233,.12);color:#38bdf8}
+.t-REALTY,.t-CAD{background:rgba(34,197,94,.12);color:#4ade80}
+.t-CARD,.t-IBAN{background:rgba(236,72,153,.12);color:#f472b6}
+.t-REG,.t-OKPO{background:rgba(16,212,114,.12);color:#34d399}
+.t-CAR,.t-VIN,.t-DL,.t-OMS,.t-NICK,.t-NOT{background:rgba(167,139,250,.12);color:#a78bfa}
+
+/* ── PREVIEW ── */
+.pv-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:210;animation:fadeM .15s ease}
+.pv{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:min(1180px,95vw);height:90vh;display:flex;flex-direction:column;overflow:hidden}
+.pv-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:9px}
+.pv-title{display:flex;align-items:center;gap:10px}
+.pv-title h3{flex:1;font-size:15px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-close{background:none;border:none;color:var(--text3);font-size:22px;cursor:pointer;line-height:1}
+.pv-stats{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.pv-leak{padding:8px 12px;border-radius:var(--r2);font-size:12.5px}
+.pv-leak.ok{background:#0f2e1c;border:1px solid var(--success);color:var(--success)}
+.pv-leak.bad{background:#2d0f0f;border:1px solid var(--danger);color:#fca5a5;max-height:96px;overflow:auto}
+.pv-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pv-tools input[type=search]{flex:1;min-width:160px;padding:7px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:13px}
+.pv-tab{padding:6px 12px;border-radius:var(--r2);border:1px solid var(--border2);background:var(--card2);color:var(--text2);font-size:12px;cursor:pointer}
+.pv-tab.on{border-color:var(--primary);color:var(--text)}
+.pv-body{flex:1;overflow:auto;padding:18px 22px;background:var(--bg)}
+.pv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.65;color:var(--text);max-width:900px;margin:0 auto}
+.pv-text .tok{padding:1px 6px;border-radius:6px;font-weight:700;font-size:12px;cursor:help;white-space:nowrap}
+.pv-text .tok.orig{font-weight:600;font-size:13px}
+.pv-text mark{background:rgba(250,204,21,.35);color:inherit;border-radius:3px}
+.pv-pages{display:flex;flex-direction:column;gap:16px;align-items:center}
+.pv-pages img,.pv-img{max-width:100%;border:1px solid var(--border2);border-radius:6px;background:#fff}
+.btn-pv{background:var(--card2);border:1px solid var(--border2);color:var(--text2);border-radius:var(--r2);padding:5px 10px;font-size:12px;cursor:pointer}
+.btn-pv:hover{color:var(--text);border-color:var(--primary)}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
 
 /* ── TOAST ── */
@@ -270,13 +299,14 @@ tr:hover td{background:var(--card2)}
 .modal{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);padding:24px;min-width:320px;max-width:420px;width:90%}
 .modal h3{font-size:15px;margin-bottom:6px;color:var(--text)}
 .modal p.modal-sub{font-size:12px;color:var(--text3);margin-bottom:14px}
-.modal input.modal-inp{
+.modal input.modal-inp,.modal select.modal-inp{
   width:100%;padding:9px 12px;
   background:var(--card2);border:1px solid var(--border2);
   border-radius:var(--r2);color:var(--text);font-size:14px;
   font-family:var(--font);outline:none;margin-bottom:14px;transition:border-color var(--t)
 }
-.modal input.modal-inp:focus{border-color:var(--primary)}
+.modal input.modal-inp:focus,.modal select.modal-inp:focus{border-color:var(--primary)}
+.modal select.modal-inp{height:40px;line-height:1.3}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end}
 .modal-btns button{
   padding:8px 18px;border-radius:var(--r2);font-size:13px;font-weight:600;
@@ -469,6 +499,25 @@ tr:hover td{background:var(--card2)}
 <div id="toasts"></div>
 
 <!-- EDIT / ADD MAPPING MODAL -->
+<div class="pv-overlay hidden" id="pvOverlay" onclick="if(event.target===this)closePreview()">
+  <div class="pv">
+    <div class="pv-head">
+      <div class="pv-title"><h3 id="pvTitle"></h3>
+        <a class="btn-dl" id="pvDownload" href="#" download>⬇ Скачать</a>
+        <button class="pv-close" onclick="closePreview()" title="Закрыть (Esc)">×</button></div>
+      <div class="pv-stats" id="pvStats"></div>
+      <div id="pvLeak"></div>
+      <div class="pv-tools">
+        <span id="pvTabs"></span>
+        <input type="search" id="pvSearch" placeholder="Поиск по тексту…" oninput="renderPreview()">
+        <label style="font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="pvOrig" onchange="renderPreview()"> показать исходные значения</label>
+      </div>
+    </div>
+    <div class="pv-body" id="pvBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="editMapOverlay">
   <div class="modal" style="max-width:460px">
     <h3 id="editMapTitle"></h3>
@@ -496,6 +545,18 @@ tr:hover td{background:var(--card2)}
       <option value="SWIFT">SWIFT</option>
       <option value="ЛИЦЕНЗИЯ">Лицензия ЦБ</option>
       <option value="URL">URL</option>
+      <option value="НЕДВИЖ">Недвижимость: рег. запись / свидетельство</option>
+      <option value="КАДАСТР">Кадастровый номер</option>
+      <option value="КАРТА">Банковская карта</option>
+      <option value="IBAN">IBAN</option>
+      <option value="РЕГНОМЕР">Рег. номер компании</option>
+      <option value="ГОСНОМЕР">Госномер авто</option>
+      <option value="VIN">VIN</option>
+      <option value="ВУ">Водительское удостоверение</option>
+      <option value="ПОЛИС">Полис ОМС</option>
+      <option value="ОКПО">ОКПО</option>
+      <option value="НИК">Ник в мессенджере</option>
+      <option value="НОТАРИУС">Реестровый номер нотариуса</option>
     </select>
     <div class="modal-btns" style="margin-top:16px">
       <button class="btn-modal-cancel" onclick="closeEditMapModal(false)">Отмена</button>
@@ -835,7 +896,7 @@ function renderFileList(){
       </div>
       <div class="file-actions">
         ${item.status==='ok'&&item.output
-          ?`<a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.output)}" download="${esc(item.output)}">⬇ Скачать</a>`:''}
+          ?`<button class="btn-pv" onclick="openPreview('${sid}','${esc(item.output).replace(/'/g,"\\'")}')" title="Посмотреть результат, не открывая файл">👁 Просмотр</button><a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.output)}" download="${esc(item.output)}">⬇ Скачать</a>`:''}
         ${item.status!=='loading'?`<button class="rm-btn" title="Удалить файл из сессии" onclick="removeFile(${i})">×</button>`:''}
       </div>
     </div>`;
@@ -853,6 +914,59 @@ const LLM_INSTRUCTION = 'В тексте есть обезличенные да�
 async function copyLlmInstruction(){
   try{await navigator.clipboard.writeText(LLM_INSTRUCTION);toast('Инструкция скопирована — вставьте её в чат нейросети перед документом','ok');}
   catch{prompt('Скопируйте инструкцию:',LLM_INSTRUCTION);}
+}
+
+let PV=null;
+async function openPreview(sid, filename){
+  try{
+    const d=await apiFetch(`/api/sessions/${sid}/preview/${encodeURIComponent(filename)}`);
+    PV={...d,sid,tab:d.kind==='pdf'?'text':(d.kind==='image'?'image':'text')};
+    $('pvTitle').textContent=filename;
+    $('pvDownload').href=`/api/download/${sid}/${encodeURIComponent(filename)}`;
+    $('pvDownload').setAttribute('download',filename);
+    $('pvSearch').value='';$('pvOrig').checked=false;
+    $('pvOverlay').classList.remove('hidden');
+    renderPreview();
+  }catch(ex){toast('Просмотр недоступен: '+ex.message,'err');}
+}
+function closePreview(){$('pvOverlay').classList.add('hidden');PV=null;}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&PV)closePreview();});
+function pvTab(t){PV.tab=t;renderPreview();}
+function renderPreview(){
+  if(!PV)return;
+  const tokRe=/\[([A-Z]+)_(\d+)\]/g;
+  const counts={};
+  (PV.text||'').replace(tokRe,(m,p)=>{counts[p]=(counts[p]||0)+1;return m;});
+  const total=Object.values(counts).reduce((a,b)=>a+b,0);
+  $('pvStats').innerHTML=(total?`<span style="font-size:12px;color:var(--text2)">Замен в тексте: <b>${total}</b></span>`:'')+
+    Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([p,n])=>`<span class="badge t-${p}">${tokenLabel(p)} · ${n}</span>`).join(' ');
+  const L=PV.leaks;
+  $('pvLeak').innerHTML=L==null?'':(L.length?`<div class="pv-leak bad">⚠ Повторная проверка нашла ${L.length} подозрительных мест: ${L.slice(0,30).map(l=>esc(l.type+': '+l.value)).join(' · ')}<br>Добавьте их в таблицу замен и нажмите «Переобработать».</div>`
+    :`<div class="pv-leak ok">✓ Повторная проверка готового файла: исходных значений и новых совпадений не найдено</div>`);
+  const tabs=[];
+  if(PV.kind!=='image')tabs.push(['text','Текст']);
+  if(PV.kind==='pdf')tabs.push(['pages','Страницы']);
+  if(PV.kind==='image')tabs.push(['image','Изображение']);
+  $('pvTabs').innerHTML=tabs.length>1?tabs.map(([k,l])=>`<button class="pv-tab ${PV.tab===k?'on':''}" onclick="pvTab('${k}')">${l}</button>`).join(' '):'';
+  const body=$('pvBody');
+  if(PV.tab==='image'){body.innerHTML=`<img class="pv-img" src="/api/download/${PV.sid}/${encodeURIComponent(PV.filename)}">`;return;}
+  if(PV.tab==='pages'){
+    body.innerHTML=`<div class="pv-pages">${Array.from({length:PV.pages},(_,i)=>`<img loading="lazy" src="/api/sessions/${PV.sid}/page/${encodeURIComponent(PV.filename)}/${i}.png" alt="стр. ${i+1}">`).join('')}</div>`;return;
+  }
+  const showOrig=$('pvOrig').checked, q=$('pvSearch').value.trim().toLowerCase();
+  let html=esc(PV.text||'(в файле нет текста)');
+  const seen={}, occ=PV.occurrences||{};
+  html=html.replace(tokRe,(m,p,n)=>{
+    const key=`${p}_${n}`, info=PV.forms[key];
+    const forms=info?info.forms:[];
+    const k=seen[key]=(seen[key]||0)+1;
+    const here=(occ[key]||[])[k-1]||forms[0];   // exact form at this place of the document
+    const title=forms.length?`${key}: ${forms.join(' · ')}`:key;
+    const label=showOrig&&here?esc(here):m;
+    return `<span class="tok t-${p} ${showOrig?'orig':''}" title="${esc(title)}">${label}</span>`;
+  });
+  if(q){const rx=new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')(?![^<]*>)','gi');html=html.replace(rx,'<mark>$1</mark>');}
+  body.innerHTML=`<div class="pv-text">${html}</div>`;
 }
 
 function sicoFor(s){return s==='ok'?'✅':s==='err'?'❌':s==='loading'?'⏳':'';}
@@ -1116,7 +1230,7 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function fmtDate(dt){if(!dt)return'—';try{return new Date(dt).toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'});}catch{return dt;}}
 function fmtSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB';}
 function fileIcon(n){const e=n.split('.').pop().toLowerCase();return{txt:'📄',docx:'📝',pdf:'📕',xlsx:'📊',rtf:'📋'}[e]||'📄';}
-const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.',LIC:'Лицензия ЦБ',URL:'URL'};
+const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.',LIC:'Лицензия ЦБ',URL:'URL',REALTY:'Недвижимость',CAD:'Кадастр',CARD:'Карта',IBAN:'IBAN',REG:'Рег. номер',CAR:'Госномер',VIN:'VIN',DL:'Вод. удост.',OMS:'Полис ОМС',OKPO:'ОКПО',NICK:'Ник',NOT:'Нотариус'};
 function tokenLabel(p){return TL[p]||p;}
 function toast(msg,type='info'){const c=document.getElementById('toasts');const el=document.createElement('div');el.className='toast '+type;el.innerHTML=`<span>${{ok:'✅',err:'❌',info:'ℹ️'}[type]}</span><span>${esc(msg)}</span>`;c.appendChild(el);setTimeout(()=>el.remove(),4500);}
 

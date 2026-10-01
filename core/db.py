@@ -141,6 +141,11 @@ def create_session(db_path, name: str) -> str:
     return sid
 
 
+def rename_session(db_path, session_id: str, name: str):
+    with get_conn(db_path) as conn:
+        conn.execute('UPDATE sessions SET name=? WHERE id=?', (name, session_id))
+
+
 def get_all_sessions(db_path):
     with get_conn(db_path) as conn:
         rows = conn.execute('''

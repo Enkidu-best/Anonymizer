@@ -15,7 +15,7 @@ import urllib.error
 from typing import List, Tuple
 
 OLLAMA_URL   = 'http://localhost:11434'
-DEFAULT_MODEL = 'qwen3:8b'   # Alibaba Qwen3, Apache-2.0, strong Russian; ~5 GB
+DEFAULT_MODEL = 'qwen3.5:9b'   # Alibaba Qwen3.5, Apache-2.0; text + images, ~6.6 GB
 
 _lock        = threading.Lock()
 _llm_model   = None

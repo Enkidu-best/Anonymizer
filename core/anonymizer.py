@@ -207,7 +207,7 @@ _OPF_FULL = (
 )
 
 _OPF_SHORT = (
-    r'(?:ООО|ПАО|НАО|ЗАО|ОАО|АО|ОДО|'
+    r'(?:ООО|ПАО|НАО|ЗАО|ОАО|АО|ОДО|ОсОО|ТОО|ЖШС|ЧП|'
     r'ПТ|ТНВ|КТ|КФХ|ХП|ПК|ПотК|'
     r'ГУП|МУП|ФГУП|'
     r'АНО|НП|НКО|ГК|КБ|ИП|'
@@ -382,8 +382,6 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
            r'(\+?[78]?[ \t\u00a0\-\(]?\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
         (_p(r'(?<!\d)(\+7[ \t\u00a0\-\(]?\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
         (_p(r'(?<!\d)(8[ \t\u00a0\-\(]\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
-        (_p(r'(?<!\d)([78][3-9]\d{9})(?!\d)'), 1),
-        (_p(r'(?<!\d)(9[0-9]\d{8})(?!\d)'), 1),
     ]),
     ('EMAIL', [
         (_p(r'\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b'), 1),
@@ -614,11 +612,12 @@ _OPF_ANY_RE = re.compile(
 
 
 # Public bodies and courts are not secret («курс Центрального банка России», «Росреестр»)
+_NOT_ORG_TOKENS = {'HYPERLINK', 'PAGE', 'MERGEFORMAT', 'TOC', 'REF', 'RUR', 'RUB', 'USD', 'EUR', 'CNY', 'GBP'}
 _PUBLIC_ORG_RE = re.compile(
     r'центральн\w*\s+банк|банк\w*\s+росси|^цб\b|росреестр|федеральн\w*\s+налогов|^и?фнс\b|'
     r'министерств|правительств|арбитражн\w*\s+суд|верховн\w*\s+суд|конституционн\w*\s+суд|'
     r'федеральн\w*\s+служб|управлени\w*\s+федеральн|государственн\w*\s+дум|пенсионн\w*\s+фонд|'
-    r'социальн\w*\s+фонд|прокуратур|^суд\b|^мвд\b|^фссп\b|^асв\b|агентств\w*\s+по\s+страхованию',
+    r'социальн\w*\s+фонд|^мин(?:фин|юст|эконом|труд|здрав|обр|цифр|промторг|энерго)\w*|прокуратур|^суд\b|^мвд\b|^фссп\b|^асв\b|агентств\w*\s+по\s+страхованию',
     re.IGNORECASE)
 
 
@@ -626,6 +625,10 @@ def _validate_spacy_org(text: str) -> bool:
     """Strict ORG check. See test_bugs_v23 for the cases that drove these rules."""
     raw = text.strip()
     if _PUBLIC_ORG_RE.search(raw):
+        return False
+    if raw.count('«') != raw.count('»') or raw.count('"') % 2:
+        return False   # fragment cut inside quotes: «КД «СМС»
+    if raw.upper() in _NOT_ORG_TOKENS:
         return False
     t = raw.strip('«»"\'(),.;:—–-')
     if not t or len(t) < 2 or len(t) > 80:
@@ -641,19 +644,20 @@ def _validate_spacy_org(text: str) -> bool:
     if low in _STOP_TOKENS:
         return False
 
-    # All-caps ASCII or Cyrillic acronym (АСВ, МИР, VISA) — 2-10 chars
-    if 2 <= len(t) <= 10 and re.fullmatch(r'[A-ZА-ЯЁ0-9]+', t):
-        # a heading word in capitals («ФИНАНСОВОЙ») is not an acronym
-        from core.detectors import _unknown
-        return _unknown(t.capitalize())
+    # A bare acronym (КП, РВПС, АППГ, УКР…) is usually an internal abbreviation of a
+    # department or a term, not a company: companies come with a legal form or quotes,
+    # which the rule layer already handles.
+    if re.fullmatch(r'[A-ZА-ЯЁ0-9&\-]+', t):
+        return False
 
     # Brand-style single token (MasterCard, Yandex, Сбербанк) — but not an ordinary
     # dictionary word that merely starts a sentence («Отчет», «Персонал»)
     if ' ' not in t and 3 <= len(t) <= 25 and re.fullmatch(r'[A-Za-zА-ЯЁа-яё0-9+\-]+', t):
         if t[:1].isupper():
-            from core.detectors import _unknown, _tags
-            brand = (_unknown(t) or 'Orgn' in _tags(t) or re.search(r'[A-Z].*[a-z].*[A-Z]|[0-9+\-]|[A-Za-z]', t))
-            return bool(brand)
+            # only brand-like Latin names (CaseBook, MasterCard) or dictionary organisations;
+            # a capitalized Russian word is usually just the start of a sentence («Выведенные»)
+            from core.detectors import _tags
+            return bool('Orgn' in _tags(t) or re.fullmatch(r'[A-Z][a-z]+[A-Z][A-Za-z]+|[A-Z][a-z]{3,}', t))
 
     words = t.split()
     if len(words) > 8:
@@ -686,6 +690,11 @@ def _validate_spacy_org(text: str) -> bool:
     # have all words capitalised.
     if not all(_starts_upper(w) for w in rest_words):
         return False
+    if not has_quote:
+        from core.detectors import _unknown
+        if not any(_unknown(w.strip('«»"\'(),.').capitalize()) or re.search('[A-Za-z]', w)
+                   for w in rest_words):
+            return False   # only dictionary words, no quotes: a heading, not a name
     # Reject when ≥ ⅔ of remaining words are stop tokens (description, not name)
     bad_remaining = sum(
         1 for w in rest_words if w.lower().strip('«»"\'(.,;:—–-') in _STOP_TOKENS
@@ -1014,7 +1023,7 @@ def _propagate_orgs(text: str, db_path, session_id: str, exclusions: set = None)
             if len(w) < 2 or w in _GENERIC_LATIN or opf.match(w):
                 continue
             latin = w.isascii() and w[0].isupper()
-            abbr = w.isupper() and len(w) <= 8
+            abbr = w.isupper() and 3 <= len(w) <= 8
             if latin or abbr or (len(w) >= 4 and w[0].isupper() and _unknown(w)):
                 words.setdefault(w, mp['token'])
     if not words:

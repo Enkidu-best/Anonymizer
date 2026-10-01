@@ -80,3 +80,31 @@ def test_broken_text_layer_detected():
     assert text_layer_ok(good)
     assert text_layer_ok('Share purchase agreement between the Seller and the Buyer dated twelve March '
                          'two thousand and twenty five regarding the shares of the Company and other terms')
+
+
+def test_textutil_markup_normalized_and_props_scrubbed():
+    from lxml import etree
+    from core.ooxml import normalize_wordml, W
+    xml = (f'<w:document xmlns:w="{W}"><w:body><w:p><w:pPr><w:jc w:val="both"/><w:ind w:left="1"/></w:pPr>'
+           '<w:r><w:rPr><w:rFonts w:ascii="X"/><w:sz w:val="24"/><w:sz-cs w:val="24"/><w:b/><w:color w:val="0"/>'
+           '</w:rPr><w:t>x</w:t></w:r></w:p></w:body></w:document>')
+    root = etree.fromstring(xml)
+    normalize_wordml(root)
+    rpr = [c.tag.split('}')[1] for c in root.iter(f'{{{W}}}rPr').__next__()]
+    ppr = [c.tag.split('}')[1] for c in root.iter(f'{{{W}}}pPr').__next__()]
+    assert rpr == ['rFonts', 'b', 'color', 'sz', 'szCs']
+    assert ppr == ['ind', 'jc']
+
+
+def test_docx_title_and_subject_cleared(tmp_path, tmp_db, session_id):
+    from docx import Document
+    src = tmp_path / 'p.docx'
+    d = Document()
+    d.add_paragraph('Текст договора')
+    d.core_properties.title = 'Тверская обл., г. Примерск, пр. Ленина, д. 12'
+    d.core_properties.subject = 'Тел./факс: (48242)3-33-08'
+    d.save(src)
+    (tmp_path / 'a').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
+    props = Document(tmp_path / 'a' / r['output_filename']).core_properties
+    assert not props.title and not props.subject

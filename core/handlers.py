@@ -71,6 +71,13 @@ def _convert_to_docx(src: Path, out_dir: Path) -> Path:
     else:
         subprocess.run([tool, '--headless', '--convert-to', 'docx', '--outdir', str(out_dir), str(src)],
                        check=True, capture_output=True, timeout=180)
+    # textutil writes non-standard markup that Word reports as «unreadable content»
+    from core.ooxml import Package, normalize_wordml
+    pkg = Package(dst)
+    for name, root in pkg.xml.items():
+        if name.startswith('word/'):
+            normalize_wordml(root)
+    pkg.save(dst)
     return dst
 
 

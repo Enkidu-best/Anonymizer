@@ -8,6 +8,7 @@ Anonymizer — Flask backend + native window.
 
 import io
 import json
+import re
 import os
 import sys
 import shutil
@@ -413,11 +414,76 @@ def process():
                              'status':  'error',
                              'error':   str(ex)})
 
+    _auto_name_session(sid, [r['filename'] for r in results if r.get('status') == 'ok'])
     return jsonify({
         'results':    results,
         'session_id': sid,
         'mappings':   get_session_mappings(DB_PATH, sid),
     })
+
+
+_DEFAULT_SESSION_NAME = re.compile(r'^(?:Сессия\s+(?:\d{2}\.\d{2}\.\d{2,4}|[A-F0-9]{6})|)$')
+
+
+def _auto_name_session(sid, filenames):
+    """A default name («Сессия 01.10.26») becomes «<file> · 01.10.26 14:05» after the first
+    processed file, so sessions can be told apart. Names typed by the user stay."""
+    from core.db import get_all_sessions, rename_session
+    import datetime
+    if not filenames:
+        return
+    sess = next((x for x in get_all_sessions(DB_PATH) if x['id'] == sid), None)
+    if not sess or not _DEFAULT_SESSION_NAME.match((sess.get('name') or '').strip()):
+        return
+    stem = Path(filenames[0]).stem[:60]
+    more = f' +{len(filenames) - 1}' if len(filenames) > 1 else ''
+    rename_session(DB_PATH, sid, f'{stem}{more} · {datetime.datetime.now():%d.%m.%y %H:%M}')
+
+
+# ── Preview of a processed file (no need to open it) ─────────────────────────
+@app.route('/api/sessions/<sid>/preview/<path:filename>')
+def preview_file(sid, filename):
+    from core.extract import extract_text
+    from core.handlers import IMAGE_EXT, leak_check
+    from core.db import get_session_mappings
+    if '..' in filename or '/' in filename:
+        return jsonify({'error': 'invalid filename'}), 400
+    path = UPLOADS_DIR / sid / 'output' / filename
+    if not path.exists():
+        return jsonify({'error': 'Файл не найден'}), 404
+    forms = {}
+    for m in get_session_mappings(DB_PATH, sid):
+        forms.setdefault(m['token'], {'type': m['entity_type'], 'forms': []})['forms'].append(m['original_form'])
+    ext = path.suffix.lower()
+    from core.db import get_occurrences
+    out = {'filename': filename, 'forms': forms, 'kind': 'text', 'pages': 0, 'text': '',
+           'occurrences': get_occurrences(DB_PATH, sid, filename)}
+    if ext in IMAGE_EXT:
+        out['kind'] = 'image'
+    else:
+        try:
+            out['text'] = extract_text(path, meta=False)[:300000]
+        except Exception as ex:
+            out['text'] = f'Не удалось прочитать файл: {ex}'
+        if ext == '.pdf':
+            import pymupdf
+            out['kind'] = 'pdf'
+            out['pages'] = len(pymupdf.open(str(path)))
+        out['leaks'] = leak_check(path, sid, DB_PATH)
+    return jsonify(out)
+
+
+@app.route('/api/sessions/<sid>/page/<path:filename>/<int:page>.png')
+def preview_pdf_page(sid, filename, page):
+    import pymupdf
+    if '..' in filename or '/' in filename:
+        return jsonify({'error': 'invalid filename'}), 400
+    path = UPLOADS_DIR / sid / 'output' / filename
+    doc = pymupdf.open(str(path))
+    if not 0 <= page < len(doc):
+        return jsonify({'error': 'page'}), 404
+    png = doc[page].get_pixmap(dpi=110).tobytes('png')
+    return send_file(io.BytesIO(png), mimetype='image/png')
 
 
 # ── List session output files ─────────────────────────────────────────────────

@@ -57,11 +57,11 @@ While a file is anonymized, `make_finder(..., log)` records `(token, original)` 
 - RTF: [core/rtf.py](core/rtf.py) decodes `\'hh`/`\uN` with a char→raw-bytes map; only text bytes are rewritten.
 - PDF: words with positions; lines of a block joined by space; redaction with token text sized to fit. Scans → OCR.
 - Images and scanned pages: [core/ocr.py](core/ocr.py) (Apple Vision, macOS only), black boxes with token, EXIF dropped. Not reversible.
-- DOC/ODT: converted to DOCX via `textutil` (macOS) or LibreOffice.
+- DOC/ODT: converted to DOCX via `textutil` (macOS) or LibreOffice, then `ooxml.normalize_wordml` fixes textutil's non-standard markup (Word «unreadable content»).
 - Replacement everywhere goes through `replace_spans`/`replace_bounded` (boundaries: letters for words, digits for numbers) — never `str.replace`.
 
 ### Paths, app, security
-[app.py](app.py): `DATA_DIR` = repo dir in dev, `~/Library/Application Support/Anonymizer` (or `%APPDATA%`) when frozen, `ANONYMIZER_DATA_DIR` overrides. Uploads older than 30 days are purged at start. `main()`: free port, native window via pywebview (`--browser`, `--server` flags). `_local_only` rejects foreign Host/Origin/cross-site requests. Output names are recorded per input in `uploads/<sid>/manifest.json`.
+[app.py](app.py): `DATA_DIR` = repo dir in dev, `~/Library/Application Support/Anonymizer` (or `%APPDATA%`) when frozen, `ANONYMIZER_DATA_DIR` overrides. Uploads older than 30 days are purged at start. `main()`: free port, native window via pywebview (`--browser`, `--server` flags). `_local_only` rejects foreign Host/Origin/cross-site requests. Output names are recorded per input in `uploads/<sid>/manifest.json`. `/api/sessions/<sid>/preview/<file>` (text with tokens, forms, occurrences, leak check) and `/page/<file>/<n>.png` feed the in-app preview; a default session name is replaced by «<file> · date» after the first processing.
 Build: `Anonymizer.spec` (onedir; Mac `.app` + Windows), `build_macos.sh` (icon → icns, PyInstaller, ad-hoc codesign, DMG).
 
 ### Version

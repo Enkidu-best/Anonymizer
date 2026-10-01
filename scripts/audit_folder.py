@@ -5,6 +5,8 @@
 For every file writes to --out (git-ignored by default):
   <name>.anon.txt   full text of the anonymized output (incl. metadata)
   <name>.map.txt    token → original, for manual review of what was masked
+  files/anon/       anonymized files as the app produces them
+  files/restored/   the same files after deanonymization
 and report.md with status, time, entity counts, leaks and round-trip result.
 
 Leak = an original value from the mapping still present in the output, or a
@@ -75,6 +77,8 @@ def main():
         row['time'] = time.time() - t0
         anon = d_anon / r['output_filename']
         row['out'] = r['output_filename']
+        (out / 'files' / 'anon').mkdir(parents=True, exist_ok=True)
+        shutil.copy2(anon, out / 'files' / 'anon' / anon.name)
         maps = get_session_mappings(db, sid)
         row['types'] = ', '.join(f'{k}={v}' for k, v in Counter(m['entity_type'] for m in maps).most_common())
         try:
@@ -97,6 +101,8 @@ def main():
                 with contextlib.redirect_stdout(io.StringIO()):
                     r2 = process_uploaded_file(anon, d_back, sid, db, 'deanonymize')
                 back = extract_text(d_back / r2['output_filename'])
+                (out / 'files' / 'restored').mkdir(parents=True, exist_ok=True)
+                shutil.copy2(d_back / r2['output_filename'], out / 'files' / 'restored' / r2['output_filename'])
                 if ext == '.pdf' or ext in CONVERT_EXT:
                     # layout-based formats: no tokens left and every value restored
                     left = TOKEN_LOOSE_RE.findall(back)

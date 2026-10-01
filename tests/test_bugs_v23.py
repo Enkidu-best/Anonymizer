@@ -77,6 +77,7 @@ def test_spacy_fio_accepts_real_fios(good):
     'Единственный региональный банк',
     'Рейтинги',
     'АСВ', 'ЦЕНА', 'Центрального банка России',   # public bodies / heading words (v3.1)
+    'НАУФОР', 'ФКЦБ', 'РЦБ', 'VISA',             # bare acronyms: regulators, media, payment systems
 ])
 def test_spacy_org_rejects_common_garbage(bad):
     assert not _validate_spacy_org(bad), f'ORG validator wrongly accepted {bad!r}'
@@ -85,8 +86,8 @@ def test_spacy_org_rejects_common_garbage(bad):
 @pytest.mark.parametrize('good', [
     'АО «Полярный Торговый Банк»',
     'ООО «Ромашка»',
-    'НАУФОР', 'ФКЦБ', 'РЦБ',
-    'VISA', 'MasterCard',
+
+    'MasterCard',
 ])
 def test_spacy_org_accepts_real_orgs(good):
     assert _validate_spacy_org(good), f'ORG validator wrongly rejected {good!r}'

@@ -214,10 +214,14 @@ class Package:
         return n
 
     def scrub_metadata(self, author='Автор'):
-        """Remove personal metadata: creator, last editor, company, manager, authors."""
+        """Remove personal metadata: creator, last editor, company, manager, authors,
+        and free-text fields (title, subject, keywords, description) — converters copy
+        the first lines of a document there («Тверская обл., г. …», «Тел./факс: …»)."""
         core = self.xml.get('docProps/core.xml')
         if core is not None:
-            for tag in (f'{{{DC}}}creator', f'{{{CP}}}lastModifiedBy'):
+            for tag in (f'{{{DC}}}creator', f'{{{CP}}}lastModifiedBy', f'{{{DC}}}title',
+                        f'{{{DC}}}subject', f'{{{DC}}}description', f'{{{CP}}}keywords',
+                        f'{{{CP}}}category'):
                 for el in core.iter(tag):
                     el.text = ''
         app = self.xml.get('docProps/app.xml')
@@ -266,3 +270,35 @@ def _apply_str(s: str, find_spans) -> str:
         last = b
     out.append(s[last:])
     return ''.join(out)
+
+
+# Schema order of run / paragraph properties (ECMA-376 CT_RPr, CT_PPr). Word reports
+# «unreadable content» when children are out of order — macOS textutil writes them so.
+_RPR_ORDER = ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
+              'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
+              'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
+              'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
+              'specVanish', 'oMath', 'rPrChange']
+_PPR_ORDER = ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
+              'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
+              'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
+              'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap', 'jc',
+              'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle',
+              'rPr', 'sectPr', 'pPrChange']
+
+
+def normalize_wordml(root):
+    """Fix non-standard WordprocessingML: «w:sz-cs» → «w:szCs», property order by schema."""
+    for el in list(root.iter(f'{{{W}}}sz-cs')):
+        el.tag = f'{{{W}}}szCs'
+    for tag, order in (('rPr', _RPR_ORDER), ('pPr', _PPR_ORDER)):
+        rank = {f'{{{W}}}{n}': i for i, n in enumerate(order)}
+        for pr in root.iter(f'{{{W}}}{tag}'):
+            kids = list(pr)
+            if len(kids) < 2:
+                continue
+            ordered = sorted(kids, key=lambda k: rank.get(k.tag, len(order)))
+            if ordered != kids:
+                for k in kids:
+                    pr.remove(k)
+                pr.extend(ordered)
