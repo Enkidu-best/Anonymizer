@@ -102,7 +102,8 @@ def _clean_stem(stem: str) -> str:
 def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
                           use_spacy: bool = True,
-                          use_llm: bool = False) -> dict:
+                          use_llm: bool = False, llm_only: bool = False) -> dict:
+    _STATE.llm_only = llm_only     # «Только нейросеть»: rules really switched off
     valid, err = validate_file(input_path)
     if not valid:
         raise ValueError(err)
@@ -130,7 +131,7 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
             save_occurrences(db_path, session_id, final.name, _STATE.log)
-            save_places(db_path, session_id, _STATE.places)
+            save_places(db_path, session_id, _STATE.places, file_key=final.name)
             with log.stage('verify'):
                 not_applied = _verify_written(final)
             if not_applied:
@@ -142,6 +143,7 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
                       leaks=len(result['leaks']))
         else:
             from core.anonymizer import restore_text
+            _STATE.file_key = safe_upload_name(input_path.name)   # the anonymized file as downloaded
             with log.stage('restore'):
                 result = _deanonymize(src, tmp_out, ext, session_id, db_path)
             stats = getattr(_STATE, 'rev', None)
@@ -219,8 +221,8 @@ def anonymize_filename(stem: str, session_id: str, db_path) -> str:
 
 def _detect(text, session_id, db_path, use_spacy, use_llm):
     from core.anonymizer import anonymize_text_pipeline
-    _, reps = anonymize_text_pipeline(text, db_path, session_id,
-                                      use_spacy=use_spacy, use_llm=use_llm)
+    _, reps = anonymize_text_pipeline(text, db_path, session_id, use_spacy=use_spacy, use_llm=use_llm,
+                                      llm_only=getattr(_STATE, 'llm_only', False))
     return reps
 
 
@@ -270,7 +272,7 @@ def _verify_written(path: Path) -> int:
 
 def _rev_finder(session_id, db_path):
     from core.anonymizer import make_rev_finder
-    _STATE.rev = make_rev_finder(db_path, session_id)
+    _STATE.rev = make_rev_finder(db_path, session_id, file_key=getattr(_STATE, 'file_key', None))
     return _STATE.rev
 
 

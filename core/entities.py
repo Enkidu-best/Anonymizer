@@ -160,3 +160,44 @@ def same_person(a: str, b: str) -> bool:
     if not (pa.surname or pa.name) or not (pb.surname or pb.name):
         return False
     return pa.compatible(pb)
+
+
+def _lev(a: str, b: str, limit: int) -> int:
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def similar_pairs(mappings: list) -> list:
+    """Candidates «похоже на одно и то же — объединить?» (task 2, §1.5): different tokens
+    of the same type whose values differ by OCR noise (≤1 edit per 8 letters) or are
+    compatible forms of one person that were not merged automatically (namesakes)."""
+    by_token = {}
+    for m in mappings:
+        by_token.setdefault(m['token'], m)
+    items = list(by_token.values())
+    out = []
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if a['entity_type'] != b['entity_type'] or a['entity_type'] not in ('ФИО', 'ЮЛ', 'АДРЕС'):
+                continue
+            va, vb = a['original_form'], b['original_form']
+            if a['entity_type'] == 'ФИО':
+                pa, pb = Person.parse(va), Person.parse(vb)
+                ok = pa.surname and pa.surname == pb.surname and pa.compatible(pb)
+            else:
+                ka, kb = compact_key(va), compact_key(vb)
+                lim = max(1, min(len(ka), len(kb)) // 8)
+                ok = len(ka) >= 4 and len(kb) >= 4 and _lev(ka, kb, lim) <= lim
+            if ok:
+                out.append({'a': a['token'], 'b': b['token'], 'type': a['entity_type'],
+                            'a_value': va, 'b_value': vb})
+    return out

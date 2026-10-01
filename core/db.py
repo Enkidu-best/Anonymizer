@@ -96,6 +96,25 @@ def init_db(db_path):
             )''')
         # v4: mappings are never deleted — status active / excluded (user: «не маскировать») /
         # replaced (user edited it); inactive rows still restore files downloaded earlier
+        # identical anonymized places of one file (two signature lines «/ [FIO_1] /») keep
+        # their own forms: one row per occurrence, in document order
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS place_forms (
+                session_id TEXT NOT NULL,
+                file_key   TEXT NOT NULL,
+                place_hash TEXT NOT NULL,
+                seq        INTEGER NOT NULL,
+                items      TEXT NOT NULL,
+                gen        REAL NOT NULL DEFAULT 0
+            )''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_place_forms ON place_forms(session_id, place_hash)')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS token_aliases (
+                session_id TEXT NOT NULL,
+                old_token  TEXT NOT NULL,
+                new_token  TEXT NOT NULL,
+                PRIMARY KEY (session_id, old_token)
+            )''')
         cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
         if 'status' not in cols:
             conn.execute("ALTER TABLE mappings ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
@@ -178,6 +197,8 @@ def delete_session(db_path, session_id: str):
     with get_conn(db_path) as conn:
         conn.execute('DELETE FROM occurrences WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM places WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM place_forms WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM token_aliases WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM mappings    WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM exclusions  WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM sessions    WHERE id=?',         (session_id,))
@@ -326,6 +347,16 @@ def get_or_create_token(db_path, session_id: str,
     return token
 
 
+def merge_tokens(db_path, session_id: str, token: str, into: str):
+    """«Это одно и то же»: all forms of `token` now belong to `into`. The old token stays
+    known as an alias, so files downloaded before the merge still restore."""
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE mappings SET token=?, status='active' WHERE session_id=? AND token=?",
+                     (into, session_id, token))
+        conn.execute('INSERT OR REPLACE INTO token_aliases (session_id, old_token, new_token) VALUES (?,?,?)',
+                     (session_id, token, into))
+
+
 def add_alias(db_path, session_id: str, token: str, original: str, entity_type: str):
     """Another written form of an existing entity («NTI» for «Northwind Trading & Investments»)."""
     with get_conn(db_path) as conn:
@@ -350,17 +381,30 @@ def _set_status(db_path, session_id, token, status):
                      (status, session_id, token))
 
 
-def save_places(db_path, session_id: str, places):
-    """places: [(fingerprint of the anonymized place, [(token, original form), ...])]."""
+def save_places(db_path, session_id: str, places, file_key: str = ''):
+    """places: [(fingerprint of the anonymized place, [(token, original form), ...])] in
+    document order. Every version of a file is kept: a file downloaded before a mapping
+    edit (same name, other tokens) must still restore exactly."""
+    import time
+    gen = time.time()
     with get_conn(db_path) as conn:
-        conn.executemany('INSERT OR REPLACE INTO places (session_id, place_hash, items) VALUES (?,?,?)',
-                         [(session_id, h, json.dumps(items, ensure_ascii=False)) for h, items in places])
+        conn.executemany('INSERT INTO place_forms (session_id, file_key, place_hash, seq, items, gen) '
+                         'VALUES (?,?,?,?,?,?)',
+                         [(session_id, file_key, h, i, json.dumps(items, ensure_ascii=False), gen)
+                          for i, (h, items) in enumerate(places)])
 
 
-def get_places(db_path, session_id: str) -> dict:
+def get_places(db_path, session_id: str, file_key: str = None) -> dict:
+    """{fingerprint: [items of 1st occurrence, items of 2nd, ...]} — the given file first,
+    then every other file of the session."""
     with get_conn(db_path) as conn:
-        rows = conn.execute('SELECT place_hash, items FROM places WHERE session_id=?', (session_id,)).fetchall()
-    return {r['place_hash']: [tuple(x) for x in json.loads(r['items'])] for r in rows}
+        rows = conn.execute('SELECT file_key, place_hash, items FROM place_forms WHERE session_id=? '
+                            'ORDER BY (file_key = ?) DESC, gen DESC, file_key, seq',
+                            (session_id, file_key or '')).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r['place_hash'], []).append([tuple(x) for x in json.loads(r['items'])])
+    return out
 
 
 def update_mapping(db_path, session_id: str, token: str, data: dict):
@@ -412,6 +456,12 @@ def get_reverse_info(db_path, session_id: str) -> dict:
             out[r['token']] = (canon, True)
         elif r['token'] not in out:
             out[r['token']] = (orig or canon, False)
+    with get_conn(db_path) as conn:
+        aliases = conn.execute('SELECT old_token, new_token FROM token_aliases WHERE session_id=?',
+                               (session_id,)).fetchall()
+    for a in aliases:                     # tokens merged away: old files still restore
+        if a['old_token'] not in out and a['new_token'] in out:
+            out[a['old_token']] = out[a['new_token']]
     return out
 
 

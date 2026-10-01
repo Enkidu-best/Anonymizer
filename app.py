@@ -13,6 +13,7 @@ import os
 import sys
 import shutil
 import threading
+import time
 import webbrowser
 import zipfile
 from pathlib import Path
@@ -413,6 +414,13 @@ def process():
     sid        = request.form.get('session_id', '').strip()
     use_spacy  = request.form.get('use_spacy',  'true').lower() != 'false'
     use_llm    = request.form.get('use_llm',    'false').lower() == 'true'
+    # engine: fast = rules + spaCy; accurate = fast + LLM review in the background;
+    # llm_only = only the LLM (to judge its quality). Old clients send use_spacy/use_llm.
+    engine     = request.form.get('engine') or ('accurate' if use_llm else 'fast')
+    llm_only   = engine == 'llm_only'
+    background_review = engine == 'accurate' and mode == 'anonymize'
+    if background_review:
+        use_llm = False            # the file is ready after the rules; the LLM reviews in the background
     if not sid:
         return jsonify({'error': 'session_id не передан'}), 400
 
@@ -434,19 +442,26 @@ def process():
         src = in_dir / safe_upload_name(f.filename)
         f.save(str(src))
         try:
-          # file number in the request, type and size only — the name may contain a company name
-          with journal.Job(mode, session=sid[:8], file_no=n, ext=src.suffix.lower(),
-                           size_kb=round(src.stat().st_size / 1024), spacy=use_spacy, llm=use_llm) as job:
-            r = process_uploaded_file(
-                input_path=src,
-                output_dir=out_dir,
-                session_id=sid,
-                db_path=DB_PATH,
-                mode=mode,
-                use_spacy=use_spacy,
-                use_llm=use_llm,
-            )
-            r['job'] = job.id
+            # file number in the request, type and size only — the name may contain a company name
+            with journal.Job(mode, session=sid[:8], file_no=n, ext=src.suffix.lower(),
+                             size_kb=round(src.stat().st_size / 1024), spacy=use_spacy, llm=use_llm) as job:
+                r = process_uploaded_file(
+                    input_path=src,
+                    output_dir=out_dir,
+                    session_id=sid,
+                    db_path=DB_PATH,
+                    mode=mode,
+                    use_spacy=use_spacy and not llm_only,
+                    use_llm=use_llm or llm_only,
+                    llm_only=llm_only,
+                )
+                r['job'] = job.id
+            if background_review:
+                from core.handlers import IMAGE_EXT
+                if src.suffix.lower() in IMAGE_EXT:
+                    r['note'] = 'Для изображений проверка нейросетью не выполняется: закрашено по распознанному тексту'
+                else:
+                    r['llm_job'] = _start_review(sid, src, out_dir / r['output_filename'])
             out_name = r['output_filename']
             _remember_output(session_dir, src.name, mode, out_name)
             results.append({'filename': f.filename,
@@ -456,6 +471,8 @@ def process():
                              'leaks': r.get('leaks'),
                              'restore': r.get('restore'),
                              'job': r.get('job'),
+                             'llm_job': r.get('llm_job'),
+                             'apply_errors': r.get('apply_errors'),
                              'note': r.get('note')})
         except Exception as ex:
             journal.error('process_failed', ex, file_no=n)
@@ -469,6 +486,111 @@ def process():
         'session_id': sid,
         'mappings':   get_session_mappings(DB_PATH, sid),
     })
+
+
+# ── Background LLM review («Точно») ───────────────────────────────────────────
+REVIEWS = {}     # job id → state; in memory, a review lives as long as the app runs
+
+
+def _start_review(sid, src: Path, out: Path) -> str:
+    """The file is already downloadable; the local LLM reviews the found values and the
+    suspicious lines in a thread and proposes additions / removals."""
+    import uuid as _uuid
+    jid = _uuid.uuid4().hex[:12]
+    REVIEWS[jid] = {'id': jid, 'status': 'running', 'session': sid, 'input': src.name,
+                    'output': out.name, 'started': time.time(), 'updated': time.time()}
+
+    def work():
+        from core.extract import extract_text
+        from core.db import get_session_mappings
+        from core.handlers import CONVERT_EXT, _convert_to_docx
+        from core.llm_review import review
+        st = REVIEWS[jid]
+        try:
+          with journal.Job('llm_review', session=sid[:8], ext=src.suffix.lower()):
+            orig_path = src
+            if src.suffix.lower() in CONVERT_EXT:
+                import tempfile
+                orig_path = _convert_to_docx(src, Path(tempfile.mkdtemp()))
+            original = extract_text(orig_path, meta=False)
+            masked = extract_text(out, meta=False)
+            st['proposal'] = review(original, masked, get_session_mappings(DB_PATH, sid))
+            st['status'] = 'done'
+        except Exception as ex:
+            journal.error('llm_review_failed', ex)
+            st['status'] = 'error'
+            st['error'] = 'Нейросеть недоступна или не ответила' if 'urlopen' in repr(ex) or 'Connection' in repr(ex) \
+                else str(ex)[:200]
+        st['updated'] = time.time()
+
+    threading.Thread(target=work, daemon=True).start()
+    return jid
+
+
+@app.route('/api/llm-jobs/<jid>')
+def llm_job_status(jid):
+    from core.db import get_session_mappings
+    st = REVIEWS.get(jid)
+    if not st:
+        return jsonify({'error': 'Задача не найдена (приложение перезапускалось?)', 'status': 'lost'}), 404
+    out = {k: v for k, v in st.items() if k != 'proposal'}
+    if st['status'] == 'running' and time.time() - st['started'] > 240:
+        out['status'] = 'stale'
+    out['elapsed'] = round(time.time() - st['started'], 1)
+    p = st.get('proposal')
+    if p:
+        vals = {m['token']: m for m in get_session_mappings(DB_PATH, st['session'])}
+        out['proposal'] = {
+            'add': p['add'],
+            'remove': [dict(x, value=vals.get(x['token'], {}).get('original_form', '')) for x in p['remove']
+                       if x['token'] in vals],
+            'merge': [dict(x, value=vals.get(x['token'], {}).get('original_form', ''),
+                           into_value=vals.get(x['into'], {}).get('original_form', ''))
+                      for x in p['merge'] if x['token'] in vals and x['into'] in vals],
+            'seconds': p.get('seconds'), 'checked': p.get('checked')}
+    return jsonify(out)
+
+
+@app.route('/api/llm-jobs/<jid>/apply', methods=['POST'])
+def llm_job_apply(jid):
+    """Apply the proposals the user ticked, then rebuild the file."""
+    from core.db import (get_session_mappings, add_exclusion, delete_mapping, get_or_create_token,
+                         add_alias, retire_mapping)
+    from core.handlers import process_uploaded_file
+    st = REVIEWS.get(jid)
+    if not st or st.get('status') != 'done':
+        return jsonify({'error': 'Нет готового предложения'}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    sid = st['session']
+    p = st['proposal']
+    maps = get_session_mappings(DB_PATH, sid)
+    remove = set(data.get('remove', []))
+    for m in maps:
+        if m['token'] in remove:
+            add_exclusion(DB_PATH, sid, m['original_form'], m['entity_type'])
+    for t in remove:
+        delete_mapping(DB_PATH, sid, t)
+    for i in data.get('add', []):
+        if 0 <= i < len(p['add']):
+            a = p['add'][i]
+            get_or_create_token(DB_PATH, sid, a['value'], a['value'], a['type'], manual=True)
+    from core.db import merge_tokens
+    for x in p['merge']:
+        if x['token'] in set(data.get('merge', [])):
+            merge_tokens(DB_PATH, sid, x['token'], x['into'])
+    journal.event('llm_review_applied', removed=len(remove), added=len(data.get('add', [])),
+                  merged=len(data.get('merge', [])))
+    session_dir = UPLOADS_DIR / sid
+    src = session_dir / 'input' / st['input']
+    old = session_dir / 'output' / st['output']
+    with journal.Job('reprocess', session=sid[:8], ext=src.suffix.lower()):
+        r = process_uploaded_file(src, session_dir / 'output', sid, DB_PATH, 'anonymize')
+    if old.exists() and old.name != r['output_filename']:
+        old.unlink()
+    _remember_output(session_dir, src.name, 'anonymize', r['output_filename'])
+    st['status'] = 'applied'
+    return jsonify({'ok': True, 'output': r['output_filename'], 'leaks': r.get('leaks'),
+                    'mappings': get_session_mappings(DB_PATH, sid)})
 
 
 _DEFAULT_SESSION_NAME = re.compile(r'^(?:Сессия\s+(?:\d{2}\.\d{2}\.\d{2,4}|[A-F0-9]{6})|)$')
@@ -505,10 +627,23 @@ def preview_file(sid, filename):
         forms.setdefault(m['token'], {'type': m['entity_type'], 'forms': []})['forms'].append(m['original_form'])
     ext = path.suffix.lower()
     from core.db import get_occurrences
-    out = {'filename': filename, 'forms': forms, 'kind': 'text', 'pages': 0, 'text': '',
+    inp = next((i for i, o in _manifest(UPLOADS_DIR / sid).items() if filename in o.values()), None)
+    out = {'filename': filename, 'forms': forms, 'kind': 'text', 'pages': 0, 'text': '', 'input': inp,
            'occurrences': get_occurrences(DB_PATH, sid, filename)}
+    if path.suffix.lower() in ('.docx', '.docm'):
+        out['kind'] = 'docx'      # rendered like in Word by docx-preview in the browser
     if ext in IMAGE_EXT:
         out['kind'] = 'image'
+    elif ext in ('.xlsx', '.xlsm'):
+        from openpyxl import load_workbook
+        wb = load_workbook(str(path), read_only=True)
+        out['kind'] = 'xlsx'
+        out['sheets'] = [{'name': ws.title,
+                          'rows': [['' if v is None else str(v) for v in row[:40]]
+                                   for row in ws.iter_rows(max_row=800, values_only=True)]}
+                         for ws in wb.worksheets]
+        out['text'] = extract_text(path, meta=False)[:300000]
+        out['leaks'] = leak_check(path, sid, DB_PATH)
     else:
         try:
             out['text'] = extract_text(path, meta=False)[:300000]
@@ -519,7 +654,24 @@ def preview_file(sid, filename):
             out['kind'] = 'pdf'
             out['pages'] = len(pymupdf.open(str(path)))
         out['leaks'] = leak_check(path, sid, DB_PATH)
+    from core.entities import similar_pairs
+    out['similar'] = similar_pairs(get_session_mappings(DB_PATH, sid))
     return jsonify(out)
+
+
+@app.route('/api/sessions/<sid>/mappings/<token>/merge', methods=['POST'])
+def merge_mapping(sid, token):
+    """«Это одно и то же»: every form of `token` moves under `into`; the old token is kept
+    (retired) so files downloaded earlier still restore."""
+    from core.db import get_session_mappings, merge_tokens
+    into = (request.get_json(force=True, silent=True) or {}).get('into')
+    maps = get_session_mappings(DB_PATH, sid)
+    if not any(m['token'] == token for m in maps) or not any(m['token'] == into for m in maps) \
+            or into == token:
+        return jsonify({'error': 'Записи не найдены'}), 404
+    merge_tokens(DB_PATH, sid, token, into)
+    journal.event('mapping_edit', token=token, action='merge', into=into)
+    return jsonify({'ok': True, 'mappings': get_session_mappings(DB_PATH, sid)})
 
 
 @app.route('/api/sessions/<sid>/page/<path:filename>/<int:page>.png')

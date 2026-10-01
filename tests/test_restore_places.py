@@ -88,3 +88,38 @@ def test_unknown_tokens_reported(tmp_path, tmp_db, session_id):
     _docx(reply, ['Сторона [FIO_99] и [YUL_42] согласовали.'])
     r, back = _deanon(tmp_path, tmp_db, session_id, reply)
     assert set(r['restore']['unknown']) == {'FIO_99', 'YUL_42'}
+
+
+def test_merge_keeps_old_files_restorable(tmp_path, tmp_db, session_id):
+    """«Это одно и то же»: two tokens merge into one; a file downloaded before the merge
+    still restores exactly, and new files use one token for both forms."""
+    from core.db import merge_tokens
+    src = tmp_path / 'm.docx'
+    _docx(src, ['ООО «ВекторФуд» и ООО «Вектор Фуд Сервис» подписали акт.'])
+    (tmp_path / 'a').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
+    old = tmp_path / 'a' / r['output_filename']
+    toks = sorted({m['token'] for m in get_session_mappings(tmp_db, session_id) if m['entity_type'] == 'ЮЛ'})
+    assert len(toks) == 2
+    merge_tokens(tmp_db, session_id, toks[1], into=toks[0])
+    active = {m['token'] for m in get_session_mappings(tmp_db, session_id) if m['entity_type'] == 'ЮЛ'}
+    assert active == {toks[0]}
+    assert len([m for m in get_session_mappings(tmp_db, session_id) if m['token'] == toks[0]]) == 2
+    _, back = _deanon(tmp_path, tmp_db, session_id, old)
+    assert back == ['ООО «ВекторФуд» и ООО «Вектор Фуд Сервис» подписали акт.']
+
+
+def test_identical_anonymized_paragraphs_keep_their_own_forms(tmp_path, tmp_db, session_id):
+    """Two signature lines that look the same after anonymization («/ [FIO_1] /») but hold
+    different forms of one person must each get their own form back."""
+    paras = ['Подписи сторон:', '____________ / Белозёров Аркадий Львович /', 'Акт приёма-передачи:',
+             '____________ / А.Л. Белозёров /']
+    src = tmp_path / 's.docx'
+    _docx(src, paras)
+    (tmp_path / 'a').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
+    anon = tmp_path / 'a' / r['output_filename']
+    a = _texts(anon)
+    assert a[1] == a[3], a          # identical after anonymization — the hard case
+    _, back = _deanon(tmp_path, tmp_db, session_id, anon)
+    assert back == paras

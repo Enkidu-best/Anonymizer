@@ -33,3 +33,17 @@ def test_llm_request_and_replace(monkeypatch, tmp_db, session_id):
     assert seen['format']['required'] == ['entities']
     assert seen['options']['num_predict'] >= 2048
     assert 'Тарханов,' not in out and 'Тархановский завод' in out
+
+
+def test_review_never_hangs_on_a_stuck_ollama(monkeypatch):
+    """A stuck Ollama (it happened: 0.5 tok/s while swapping) must not hang the review:
+    the hard budget returns a partial result in time, the file stays ready."""
+    import time as _t
+    from core import llm_review
+    monkeypatch.setattr(llm, 'check_ollama', lambda: {'available': True})
+    monkeypatch.setattr(llm, '_ollama_generate', lambda *a, **k: (_t.sleep(5), '{"items": []}')[1])
+    maps = [{'token': 'FIO_1', 'entity_type': 'ФИО', 'original_form': 'Тарханов Глеб'}]
+    t0 = _t.time()
+    out = llm_review.review('Тарханов Глеб подписал.', '[FIO_1] подписал.', maps, budget_s=1)
+    assert _t.time() - t0 < 2.5
+    assert out['partial']

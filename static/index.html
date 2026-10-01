@@ -122,6 +122,14 @@ header{
   background:var(--card);color:var(--text2);font-size:12px;font-weight:500;
   cursor:pointer;font-family:var(--font);transition:all var(--t);white-space:nowrap
 }
+.file-warn{color:#fbbf24;font-size:12px}
+.menu-wrap{position:relative}
+.menu{position:absolute;right:0;top:36px;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:6px;z-index:150;min-width:270px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.menu button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.menu button:hover{background:var(--card2)}
+tr.inactive td{opacity:.55}
+.ext-hint{font-size:12px;color:var(--text3);margin:2px 0 6px}.ext-hint a{color:var(--primary)}
+.pm-hint{font-size:12px;color:var(--text3);margin:-4px 0 12px}
 .pm-btn.active{background:rgba(167,139,250,.18);border-color:rgba(167,139,250,.5);color:#a78bfa}
 .pm-btn:not(.active):hover{background:var(--card2);color:var(--text)}
 
@@ -173,15 +181,11 @@ select.llm-select{
 .modal-token-info span{color:var(--primary);font-weight:700}
 
 /* ── DROP ZONE ── */
-.drop-zone{
-  border:2px dashed var(--border2);border-radius:var(--r);
-  padding:26px 22px;text-align:center;cursor:pointer;
-  transition:all var(--t);background:var(--card);margin-bottom:12px
-}
+.drop-zone{border:2px dashed var(--border2);border-radius:var(--r);padding:0 18px;height:84px;display:flex;align-items:center;justify-content:center;gap:12px;cursor:pointer;transition:all var(--t);background:var(--card);margin-bottom:12px}
 .drop-zone:hover,.drop-zone.over{border-color:var(--primary);background:var(--primary-glow)}
-.drop-icon{font-size:30px;margin-bottom:8px}
-.drop-title{font-size:14px;font-weight:600;margin-bottom:4px}
-.drop-sub{font-size:12px;color:var(--text2);margin-bottom:10px}
+.drop-icon{font-size:22px}
+.drop-title{font-size:14px;font-weight:600}
+.drop-sub{font-size:12px;color:var(--text3)}
 .fmts{display:flex;justify-content:center;gap:5px;flex-wrap:wrap}
 .fmt{padding:3px 9px;border-radius:20px;background:var(--card2);border:1px solid var(--border2);font-size:11px;font-weight:700;color:var(--text2)}
 
@@ -261,26 +265,49 @@ tr:hover td{background:var(--card2)}
 
 /* ── PREVIEW ── */
 .pv-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:210;animation:fadeM .15s ease}
-.pv{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:min(1180px,95vw);height:90vh;display:flex;flex-direction:column;overflow:hidden}
-.pv-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:9px}
-.pv-title{display:flex;align-items:center;gap:10px}
-.pv-title h3{flex:1;font-size:15px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pv-close{background:none;border:none;color:var(--text3);font-size:22px;cursor:pointer;line-height:1}
-.pv-stats{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.pv-leak{padding:8px 12px;border-radius:var(--r2);font-size:12.5px}
+.pv{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:min(1400px,97vw);height:93vh;display:flex;flex-direction:column;overflow:hidden}
+.pv-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pv-head h3{flex:1;min-width:180px;font-size:14px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-head input[type=search]{width:180px;padding:6px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:13px}
+.pv-chk{font-size:12px;color:var(--text2);display:flex;gap:5px;align-items:center;cursor:pointer}
+.pv-close{background:none;border:none;color:var(--text3);font-size:24px;cursor:pointer;line-height:1}
+.pv-main{flex:1;display:flex;min-height:0}
+.pv-body{flex:1;overflow:auto;padding:16px;background:#e9ecf2}
+.pv-side{width:330px;flex-shrink:0;border-left:1px solid var(--border);overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px;background:var(--card)}
+.pv-side h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--text3);margin:0 0 6px}
+.pv-leak{padding:8px 10px;border-radius:var(--r2);font-size:12.5px}
 .pv-leak.ok{background:#0f2e1c;border:1px solid var(--success);color:var(--success)}
-.pv-leak.bad{background:#2d0f0f;border:1px solid var(--danger);color:#fca5a5;max-height:96px;overflow:auto}
-.pv-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.pv-tools input[type=search]{flex:1;min-width:160px;padding:7px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:13px}
-.pv-tab{padding:6px 12px;border-radius:var(--r2);border:1px solid var(--border2);background:var(--card2);color:var(--text2);font-size:12px;cursor:pointer}
+.pv-leak.bad{background:#2d0f0f;border:1px solid var(--danger);color:#fca5a5}
+.pv-groups{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.pv-group{background:var(--card2);border-radius:8px;padding:7px 9px;font-size:12px;color:var(--text2)}
+.pv-group b{display:block;font-size:17px;color:var(--text)}
+.pv-ent{display:flex;gap:7px;align-items:baseline;padding:5px 6px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.pv-ent:hover{background:var(--card2)}
+.pv-ent .val{flex:1;color:var(--text);word-break:break-word}
+.pv-ent .cnt{color:var(--text3);font-size:11px}
+.pv-sim{background:var(--card2);border-radius:8px;padding:7px 9px;font-size:12px;margin-bottom:6px}
+.pv-tab{padding:5px 11px;border-radius:var(--r2);border:1px solid var(--border2);background:var(--card2);color:var(--text2);font-size:12px;cursor:pointer}
 .pv-tab.on{border-color:var(--primary);color:var(--text)}
-.pv-body{flex:1;overflow:auto;padding:18px 22px;background:var(--bg)}
-.pv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.65;color:var(--text);max-width:900px;margin:0 auto}
-.pv-text .tok{padding:1px 6px;border-radius:6px;font-weight:700;font-size:12px;cursor:help;white-space:nowrap}
-.pv-text .tok.orig{font-weight:600;font-size:13px}
-.pv-text mark{background:rgba(250,204,21,.35);color:inherit;border-radius:3px}
+.pv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.65;color:#1f2937;background:#fff;max-width:900px;margin:0 auto;padding:40px 48px;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+.tok{padding:0 5px;border-radius:5px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
+.tok.orig{font-weight:600}
+.tok.flash{outline:3px solid #f59e0b}
+#pvBody .tok{background:#ede9fe;color:#5b21b6}
+#pvBody .t-FIO{background:#dbe4ff;color:#3346c4}#pvBody .t-YUL{background:#fdf0c4;color:#8a5a00}
+#pvBody .t-ADR{background:#ccf3ec;color:#0f766e}
+#pvBody .t-INN,#pvBody .t-OGRN,#pvBody .t-KPP,#pvBody .t-REG{background:#d1fae5;color:#047857}
+#pvBody .t-RS,#pvBody .t-KS,#pvBody .t-BIK,#pvBody .t-CARD,#pvBody .t-IBAN{background:#fce7f3;color:#9d174d}
+#pvBody .t-TEL,#pvBody .t-EMAIL{background:#ffedd5;color:#9a3412}
+.pv-text mark,.pv-body mark{background:rgba(250,204,21,.6);color:inherit;border-radius:3px}
 .pv-pages{display:flex;flex-direction:column;gap:16px;align-items:center}
-.pv-pages img,.pv-img{max-width:100%;border:1px solid var(--border2);border-radius:6px;background:#fff}
+.pv-pages img,.pv-img{max-width:100%;border:1px solid #c9ced8;border-radius:4px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+.pv-sheet{background:#fff;border-collapse:collapse;font-size:12px;color:#1f2937;margin-bottom:18px}
+.pv-sheet td{border:1px solid #d6dae2;padding:3px 7px;max-width:320px;vertical-align:top}
+.pv-sheet-name{font-weight:700;color:#334155;margin:6px 0}
+.tok-pop{position:fixed;z-index:230;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:12px;width:300px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-size:12.5px}
+.tok-pop .forms{color:var(--text);margin:6px 0 10px;word-break:break-word}
+.tok-pop .acts{display:flex;flex-wrap:wrap;gap:6px}
+.tok-pop select{width:100%;margin-top:6px;padding:5px;background:var(--card2);color:var(--text);border:1px solid var(--border2);border-radius:6px}
 .btn-pv{background:var(--card2);border:1px solid var(--border2);color:var(--text2);border-radius:var(--r2);padding:5px 10px;font-size:12px;cursor:pointer}
 .btn-pv:hover{color:var(--text);border-color:var(--primary)}
 .tbl-empty{text-align:center;padding:28px;color:var(--text3);font-size:13px}
@@ -319,6 +346,8 @@ tr:hover td{background:var(--card2)}
 .btn-modal-ok.danger{background:var(--danger)}
 .btn-modal-ok.danger:hover{opacity:.85}
 </style>
+<script src="/static/vendor/jszip.min.js"></script>
+<script src="/static/vendor/docx-preview.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -345,6 +374,14 @@ tr:hover td{background:var(--card2)}
     <span id="llmBadgeText">LLM</span>
   </div>
 
+  <div class="menu-wrap">
+    <button class="btn-exit" onclick="toggleMenu(event)" title="Журнал и архив">⋯</button>
+    <div class="menu hidden" id="appMenu">
+      <button onclick="openLogs()">📁 Открыть папку журналов</button>
+      <button onclick="toggleVerbose()" id="verboseBtn">📝 Подробный журнал: выкл</button>
+      <button onclick="toggleArchive()" id="archiveBtn">🗄 Показать архив записей</button>
+    </div>
+  </div>
   <button class="btn-exit" onclick="doShutdown()">Завершить</button>
 </header>
 
@@ -379,19 +416,13 @@ tr:hover td{background:var(--card2)}
       <!-- PROCESSING MODE: 3-way toggle -->
       <div class="proc-mode-row" id="procModeRow">
         <button class="pm-btn active" id="pm1" onclick="setProcMode('regex_spacy')"
-          title="Регулярные выражения + spaCy NER">
-          Regex + spaCy
-        </button>
+          title="Правила: регулярные выражения, контрольные суммы, словари, морфология, spaCy">Быстро</button>
         <button class="pm-btn" id="pm2" onclick="setProcMode('regex_spacy_llm')"
-          title="Регулярки + spaCy + LLM дополняет пропущенное">
-          Regex + spaCy + LLM
-        </button>
+          title="Быстро + проверка локальной нейросетью (Qwen через Ollama) в фоне">Точно</button>
         <button class="pm-btn" id="pm3" onclick="setProcMode('llm_only')"
-          title="Только LLM (Ollama) — без регулярок и NER">
-          Только LLM
-        </button>
+          title="Только нейросеть — для проверки её качества">Только нейросеть</button>
       </div>
-
+      <div class="pm-hint" id="pmHint"></div>
       <!-- LLM PANEL -->
       <div class="llm-panel hidden" id="llmPanel">
         <span class="llm-panel-label">Ollama LLM</span>
@@ -409,13 +440,9 @@ tr:hover td{background:var(--card2)}
       <div class="drop-zone" id="dropZone"
            onclick="document.getElementById('fInput').click()"
            ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
-        <div class="drop-icon">📂</div>
-        <div class="drop-title">Перетащите файлы или нажмите для выбора</div>
-        <div class="drop-sub">TXT · DOCX · PDF (с текстовым слоем) · XLSX · RTF</div>
-        <div class="fmts">
-          <span class="fmt">TXT</span><span class="fmt">DOCX</span>
-          <span class="fmt">PDF</span><span class="fmt">XLSX</span><span class="fmt">RTF</span>
-        </div>
+        <span class="drop-icon">📂</span>
+        <span class="drop-title">Перетащите файлы или нажмите</span>
+        <span class="drop-sub">DOCX · DOC · PDF · сканы · XLSX · PPTX · RTF · TXT · фото</span>
       </div>
       <input type="file" id="fInput" class="hidden" multiple accept=".txt,.docx,.docm,.doc,.odt,.pptx,.pdf,.xlsx,.xlsm,.rtf,.jpg,.jpeg,.png,.heic,.tif,.tiff" onchange="onFileSelect(event)">
 
@@ -429,14 +456,15 @@ tr:hover td{background:var(--card2)}
           <span id="procTxt">Обработать</span>
         </button>
         <a id="dlAllBtn" class="btn-dl-all hidden" href="#">⬇ Скачать все (ZIP)</a>
-        <button type="button" class="btn-dl-all" onclick="copyLlmInstruction()" title="Текст для внешней нейросети: не менять плейсхолдеры">📋 Инструкция для нейросети</button>
       </div>
 
+      <div class="ext-hint hidden" id="extHint">Отправляете во внешнюю нейросеть (ChatGPT, Claude…)?
+        <a href="#" onclick="copyLlmInstruction();return false">Скопируйте фразу</a>, чтобы она не меняла плейсхолдеры вида [FIO_1].</div>
       <!-- MAPPINGS -->
       <div class="divider"></div>
       <div class="map-section">
         <div class="map-head" onclick="toggleMap()">
-          <div class="sec-label" style="margin:0">Таблица маппинга</div>
+          <div class="sec-label" style="margin:0">Таблица замен</div>
           <span id="mapCount" style="font-size:12px;color:var(--text3)"></span>
           <div style="flex:1"></div>
           <span class="map-toggle open" id="mapToggle">▶</span>
@@ -502,19 +530,30 @@ tr:hover td{background:var(--card2)}
 <div class="pv-overlay hidden" id="pvOverlay" onclick="if(event.target===this)closePreview()">
   <div class="pv">
     <div class="pv-head">
-      <div class="pv-title"><h3 id="pvTitle"></h3>
-        <a class="btn-dl" id="pvDownload" href="#" download>⬇ Скачать</a>
-        <button class="pv-close" onclick="closePreview()" title="Закрыть (Esc)">×</button></div>
-      <div class="pv-stats" id="pvStats"></div>
-      <div id="pvLeak"></div>
-      <div class="pv-tools">
-        <span id="pvTabs"></span>
-        <input type="search" id="pvSearch" placeholder="Поиск по тексту…" oninput="renderPreview()">
-        <label style="font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:center;cursor:pointer">
-          <input type="checkbox" id="pvOrig" onchange="renderPreview()"> показать исходные значения</label>
-      </div>
+      <h3 id="pvTitle"></h3>
+      <span id="pvTabs"></span>
+      <input type="search" id="pvSearch" placeholder="Поиск…" oninput="pvSearch()">
+      <label class="pv-chk"><input type="checkbox" id="pvOrig" onchange="pvMarkTokens()"> исходные значения</label>
+      <a class="btn-dl" id="pvDownload" href="#" download>⬇ Скачать</a>
+      <button class="pv-close" onclick="closePreview()" title="Закрыть (Esc)">×</button>
     </div>
-    <div class="pv-body" id="pvBody"></div>
+    <div class="pv-main">
+      <div class="pv-body" id="pvBody"></div>
+      <aside class="pv-side" id="pvSide"></aside>
+    </div>
+  </div>
+</div>
+<div class="tok-pop hidden" id="tokPop"></div>
+<div class="modal-overlay hidden" id="reviewOverlay">
+  <div class="modal" style="max-width:640px">
+    <h3>Предложения нейросети</h3>
+    <p class="modal-sub">Отметьте, что применить. Нейросеть может ошибаться — снятие маски с ФИО и
+      организаций она предлагает только для слов без признаков имени.</p>
+    <div id="reviewBody" style="max-height:52vh;overflow:auto"></div>
+    <div class="modal-btns" style="margin-top:14px">
+      <button class="btn-modal-cancel" onclick="closeReview()">Отмена</button>
+      <button class="btn-modal-ok" onclick="applyReview()">Применить и пересобрать файл</button>
+    </div>
   </div>
 </div>
 
@@ -592,8 +631,7 @@ Object.defineProperty(S, 'files', {
 async function init() {
   await loadSessions();
   pollNer();
-  checkLlm();
-  autoSelectProcMode();
+  checkLlm();   // «Быстро» stays the default: the LLM is opt-in («Точно»)
 }
 
 async function autoSelectProcMode() {
@@ -627,21 +665,27 @@ async function pollNer() {
 }
 
 // ─── Processing mode 3-way toggle ────────────────────────────────────────────
+const PM_HINT = {
+  regex_spacy: 'Правила (регулярные выражения, контрольные суммы, словари, морфология) + spaCy · секунды',
+  regex_spacy_llm: 'Быстро, затем локальная нейросеть (Qwen через Ollama) проверяет найденное и ищет пропущенное в фоне · до минуты; файл можно скачать сразу',
+  llm_only: 'Только нейросеть, без правил — чтобы оценить её качество · медленно',
+};
 function setProcMode(mode) {
   S.procMode = mode;
+  if ($('pmHint')) $('pmHint').textContent = PM_HINT[mode] || '';
   ['pm1','pm2','pm3'].forEach(id => $(id).classList.remove('active'));
   const btnId = {regex_spacy:'pm1', regex_spacy_llm:'pm2', llm_only:'pm3'}[mode] || 'pm1';
   $(btnId).classList.add('active');
 
   const needsLlm = (mode === 'llm_only' || mode === 'regex_spacy_llm');
-  $('llmPanel').classList.toggle('hidden', !needsLlm || S.mode !== 'anonymize');
+  if (needsLlm && S.mode === 'anonymize') $('llmPanel').classList.remove('hidden');
+  else $('llmPanel').classList.add('hidden');
 }
 
 // ─── LLM ─────────────────────────────────────────────────────────────────────
 function toggleLlmPanel() {
-  const modes = ['regex_spacy','regex_spacy_llm','llm_only'];
-  const next = modes[(modes.indexOf(S.procMode) + 1) % modes.length];
-  if (S.mode === 'anonymize') setProcMode(next);
+  // the badge opens the model panel; the mode is chosen with «Быстро / Точно / Только нейросеть»
+  $('llmPanel').classList.toggle('hidden');
 }
 
 async function checkLlm() {
@@ -657,8 +701,8 @@ async function checkLlm() {
       sel.innerHTML = '<option value="">— выбрать модель —</option>' +
         d.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
 
-      const best = d.models.find(m => m.includes('qwen2.5')) ||
-                   d.models.find(m => m.includes('mistral-nemo'));
+      const best = d.models.find(m => m === 'qwen3.5:9b') || d.models.find(m => m.startsWith('qwen3.5')) ||
+                   d.models.find(m => m.startsWith('qwen3')) || d.models[0];
       if (best) { sel.value = best; onLlmModelChange(); }
 
       info.textContent = `${d.models.length} модел(ей) доступно`;
@@ -748,7 +792,8 @@ async function newSession() {
   if (!name) return;
   const s = await apiFetch('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
   await loadSessions();
-  selectSession(s.id);
+  await selectSession(s.id);
+  setMode('anonymize');
   toast('Сессия создана','ok');
 }
 
@@ -877,6 +922,7 @@ async function removeFile(i){
 
 function renderFileList(){
   const el=$('fileList');
+  const hint=$('extHint'); if(hint)hint.classList.toggle('hidden',!(S.mode==='anonymize'&&S.files.some(x=>x.status==='ok')));
   if(!S.files.length){el.innerHTML='';return;}
   const sid=S.lastSid||S.active?.id||'';
   el.innerHTML=S.files.map((item,i)=>{
@@ -888,7 +934,7 @@ function renderFileList(){
         <div class="file-name" title="${esc(f.name)}">${sicoFor(item.status)} ${esc(f.name)}</div>
         <div class="file-meta">
           ${item.status==='ok'
-            ? `Объектов: ${item.entities} → <span style="color:var(--text2)">${esc(item.output||'')}</span>${leakNote(item)}`
+            ? `Объектов: ${item.entities} → <span style="color:var(--text2)">${esc(item.output||'')}</span>${leakNote(item)}${llmNote(item)}${restoreNote(item)}${item.applyErrors?`<div class="file-err">⚠ ${item.applyErrors} значений не удалось заменить в файле — не отправляйте его, сообщите разработчику (журнал)</div>`:''}`
             : item.status==='loading' ? 'Обработка...'
             : fmtSize(f.size)}
         </div>
@@ -903,6 +949,35 @@ function renderFileList(){
   }).join('');
 }
 
+function restoreNote(item){
+  const r=item.restore; if(!r||S.mode!=='deanonymize')return '';
+  let h=`<div style="color:var(--text2)">Восстановлено: ${r.restored} из ${r.tokens}`+
+    (r.exact?` · точная форма на месте: ${r.exact}`:'')+`</div>`;
+  if(r.check_case)h+=`<div class="file-warn">Проверьте падеж в новом тексте нейросети: ${r.check_case} мест(а) — подставлена основная форма</div>`;
+  if(r.unknown&&r.unknown.length)h+=`<div class="file-err">Неизвестные токены (нет в этой сессии): ${esc(r.unknown.join(', '))} — проверьте, та ли сессия выбрана</div>`;
+  return h;
+}
+function llmNote(item){
+  const j=item.llm; if(!j||S.mode!=='anonymize')return '';
+  if(j.status==='running')return `<div style="color:#a78bfa">🤖 Нейросеть проверяет найденное… ${j.elapsed?Math.round(j.elapsed)+' с':''}</div>`;
+  if(j.status==='stale')return `<div class="file-err">🤖 Проверка нейросетью зависла (нет ответа больше 5 минут)</div>`;
+  if(j.status==='error'||j.status==='lost')return `<div class="file-warn">🤖 ${esc(j.error||'Проверка нейросетью не выполнена')} — файл после правил готов</div>`;
+  if(j.status==='applied')return `<div style="color:var(--success)">🤖 Предложения нейросети применены, файл пересобран</div>`;
+  const p=j.proposal||{add:[],remove:[],merge:[]};
+  const n=p.add.length,m=p.remove.length,k=p.merge.length;
+  if(!n&&!m&&!k)return `<div style="color:var(--success)">🤖 Нейросеть проверила (${p.checked||0} знач., ${Math.round((p.seconds?.list||0)+(p.seconds?.missed||0))} с): замечаний нет</div>`;
+  return `<div style="color:#a78bfa">🤖 Нейросеть: найдено ещё ${n}, предлагает снять ${m}${k?`, объединить ${k}`:''}
+    <button class="btn-pv" onclick="openReview(${S.files.indexOf(item)})">Посмотреть и применить</button></div>`;
+}
+async function pollReview(item){
+  if(!item.llm)return;
+  try{
+    const d=await apiFetch(`/api/llm-jobs/${item.llm.id}`);
+    item.llm={...item.llm,...d};
+  }catch(ex){item.llm.status='lost';item.llm.error='Проверка недоступна';}
+  renderFileList();
+  if(item.llm.status==='running')setTimeout(()=>pollReview(item),2500);
+}
 function leakNote(item){
   if(S.mode!=='anonymize'||!item.leaks)return item.note?`<div class="file-err">${esc(item.note)}</div>`:'';
   if(!item.leaks.length)return `<div style="color:var(--green,#2e7d32)">✓ Проверка утечек: не найдено</div>`;
@@ -917,56 +992,180 @@ async function copyLlmInstruction(){
 }
 
 let PV=null;
+const GROUP={FIO:'ФИО',YUL:'Организации',ADR:'Адреса'};
+function pvGroup(p){return GROUP[p]||'Реквизиты и номера';}
 async function openPreview(sid, filename){
   try{
     const d=await apiFetch(`/api/sessions/${sid}/preview/${encodeURIComponent(filename)}`);
-    PV={...d,sid,tab:d.kind==='pdf'?'text':(d.kind==='image'?'image':'text')};
+    PV={...d,sid,tab:{docx:'doc',pdf:'pages',xlsx:'sheets',image:'image'}[d.kind]||'text'};
     $('pvTitle').textContent=filename;
     $('pvDownload').href=`/api/download/${sid}/${encodeURIComponent(filename)}`;
     $('pvDownload').setAttribute('download',filename);
     $('pvSearch').value='';$('pvOrig').checked=false;
     $('pvOverlay').classList.remove('hidden');
-    renderPreview();
+    renderPvSide(); await renderPvBody();
   }catch(ex){toast('Просмотр недоступен: '+ex.message,'err');}
 }
-function closePreview(){$('pvOverlay').classList.add('hidden');PV=null;}
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&PV)closePreview();});
-function pvTab(t){PV.tab=t;renderPreview();}
-function renderPreview(){
-  if(!PV)return;
-  const tokRe=/\[([A-Z]+)_(\d+)\]/g;
-  const counts={};
-  (PV.text||'').replace(tokRe,(m,p)=>{counts[p]=(counts[p]||0)+1;return m;});
-  const total=Object.values(counts).reduce((a,b)=>a+b,0);
-  $('pvStats').innerHTML=(total?`<span style="font-size:12px;color:var(--text2)">Замен в тексте: <b>${total}</b></span>`:'')+
-    Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([p,n])=>`<span class="badge t-${p}">${tokenLabel(p)} · ${n}</span>`).join(' ');
-  const L=PV.leaks;
-  $('pvLeak').innerHTML=L==null?'':(L.length?`<div class="pv-leak bad">⚠ Повторная проверка нашла ${L.length} подозрительных мест: ${L.slice(0,30).map(l=>esc(l.type+': '+l.value)).join(' · ')}<br>Добавьте их в таблицу замен и нажмите «Переобработать».</div>`
-    :`<div class="pv-leak ok">✓ Повторная проверка готового файла: исходных значений и новых совпадений не найдено</div>`);
+function closePreview(){$('pvOverlay').classList.add('hidden');$('tokPop').classList.add('hidden');PV=null;}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('tokPop').classList.contains('hidden'))$('tokPop').classList.add('hidden');else if(PV)closePreview();}});
+function pvTab(t){PV.tab=t;renderPvBody();}
+function pvTokenCounts(){
+  const c={};(PV.text||'').replace(/\[([A-Z]+_\d+)\]/g,(m,k)=>{c[k]=(c[k]||0)+1;return m;});return c;
+}
+function renderPvSide(){
+  const counts=pvTokenCounts(), groups={};
+  Object.keys(counts).forEach(k=>{const g=pvGroup(k.split('_')[0]);groups[g]=(groups[g]||0)+1;});
+  const L=PV.leaks; let h='';
+  h+=L==null?'':(L.length?`<div class="pv-leak bad">⚠ Повторная проверка: ${L.length} подозрительных мест<br>${L.slice(0,12).map(l=>esc(l.type+': '+l.value)).join('<br>')}</div>`
+      :`<div class="pv-leak ok">✓ Утечек не найдено — готовый файл перечитан заново</div>`);
+  h+=`<div><h4>Сводка</h4><div class="pv-groups">${['ФИО','Организации','Адреса','Реквизиты и номера'].map(g=>`<div class="pv-group"><b>${groups[g]||0}</b>${g}</div>`).join('')}</div></div>`;
+  const sim=(PV.similar||[]).filter(x=>counts[x.a]||counts[x.b]);
+  if(sim.length)h+=`<div><h4>Требуют проверки</h4>${sim.map(x=>`<div class="pv-sim">Похоже на одно и то же:<br><b>${esc(x.a_value)}</b> (${x.a}) и <b>${esc(x.b_value)}</b> (${x.b})<br>
+      <button class="btn-pv" onclick="pvMerge('${x.b}','${x.a}')">Объединить</button></div>`).join('')}</div>`;
+  const ents=Object.keys(counts).sort((a,b)=>pvGroup(a.split('_')[0]).localeCompare(pvGroup(b.split('_')[0]))||counts[b]-counts[a]);
+  h+=`<div><h4>Найдено в документе · ${ents.length}</h4>${ents.map(k=>{const p=k.split('_')[0],f=(PV.forms[k]||{}).forms||[];
+    return `<div class="pv-ent" onclick="pvJump('${k}')" title="${esc(f.join(' · '))}"><span class="badge t-${p}">${k}</span><span class="val">${esc(f[0]||'')}</span><span class="cnt">×${counts[k]}</span></div>`;}).join('')}</div>`;
+  $('pvSide').innerHTML=h;
+}
+async function renderPvBody(){
   const tabs=[];
-  if(PV.kind!=='image')tabs.push(['text','Текст']);
+  if(PV.kind==='docx')tabs.push(['doc','Документ']);
   if(PV.kind==='pdf')tabs.push(['pages','Страницы']);
+  if(PV.kind==='xlsx')tabs.push(['sheets','Таблица']);
   if(PV.kind==='image')tabs.push(['image','Изображение']);
+  if(PV.kind!=='image')tabs.push(['text','Текст']);
   $('pvTabs').innerHTML=tabs.length>1?tabs.map(([k,l])=>`<button class="pv-tab ${PV.tab===k?'on':''}" onclick="pvTab('${k}')">${l}</button>`).join(' '):'';
-  const body=$('pvBody');
-  if(PV.tab==='image'){body.innerHTML=`<img class="pv-img" src="/api/download/${PV.sid}/${encodeURIComponent(PV.filename)}">`;return;}
-  if(PV.tab==='pages'){
-    body.innerHTML=`<div class="pv-pages">${Array.from({length:PV.pages},(_,i)=>`<img loading="lazy" src="/api/sessions/${PV.sid}/page/${encodeURIComponent(PV.filename)}/${i}.png" alt="стр. ${i+1}">`).join('')}</div>`;return;
+  const body=$('pvBody'), url=`/api/download/${PV.sid}/${encodeURIComponent(PV.filename)}`;
+  if(PV.tab==='image'){body.innerHTML=`<img class="pv-img" src="${url}">`;return;}
+  if(PV.tab==='pages'){body.innerHTML=`<div class="pv-pages">${Array.from({length:PV.pages},(_,i)=>`<img loading="lazy" src="/api/sessions/${PV.sid}/page/${encodeURIComponent(PV.filename)}/${i}.png" alt="стр. ${i+1}">`).join('')}</div>`;return;}
+  if(PV.tab==='sheets'){body.innerHTML=(PV.sheets||[]).map(sh=>`<div class="pv-sheet-name">Лист: ${esc(sh.name)}</div><table class="pv-sheet">${sh.rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`).join('');pvMarkTokens();return;}
+  if(PV.tab==='doc'&&window.docx){
+    body.innerHTML='<div style="color:#475569">Открываю документ…</div>';
+    try{
+      const blob=await (await fetch(url)).blob(); body.innerHTML='';
+      await docx.renderAsync(blob, body, null, {inWrapper:true, ignoreLastRenderedPageBreak:true, renderHeaders:true, renderFooters:true, renderFootnotes:true});
+      pvMarkTokens(); return;
+    }catch(ex){body.innerHTML='';}
   }
-  const showOrig=$('pvOrig').checked, q=$('pvSearch').value.trim().toLowerCase();
-  let html=esc(PV.text||'(в файле нет текста)');
-  const seen={}, occ=PV.occurrences||{};
-  html=html.replace(tokRe,(m,p,n)=>{
-    const key=`${p}_${n}`, info=PV.forms[key];
-    const forms=info?info.forms:[];
-    const k=seen[key]=(seen[key]||0)+1;
-    const here=(occ[key]||[])[k-1]||forms[0];   // exact form at this place of the document
-    const title=forms.length?`${key}: ${forms.join(' · ')}`:key;
-    const label=showOrig&&here?esc(here):m;
-    return `<span class="tok t-${p} ${showOrig?'orig':''}" title="${esc(title)}">${label}</span>`;
+  body.innerHTML=`<div class="pv-text">${esc(PV.text||'(в файле нет текста)')}</div>`; pvMarkTokens();
+}
+function pvMarkTokens(){
+  // wrap every [TOKEN_N] in the rendered document into a coloured, clickable chip
+  const body=$('pvBody'); if(!body||!PV)return;
+  body.querySelectorAll('span.tok').forEach(sp=>sp.replaceWith(document.createTextNode(sp.dataset.raw)));
+  body.normalize();
+  const showOrig=$('pvOrig').checked, seen={}, occ=PV.occurrences||{};
+  const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT), nodes=[];
+  while(walker.nextNode()){if(/\[[A-Z]+_\d+\]/.test(walker.currentNode.nodeValue))nodes.push(walker.currentNode);}
+  nodes.forEach(n=>{
+    const frag=document.createDocumentFragment(); let last=0; const t=n.nodeValue;
+    t.replace(/\[([A-Z]+)_(\d+)\]/g,(m,p,num,off)=>{
+      frag.appendChild(document.createTextNode(t.slice(last,off)));
+      const key=`${p}_${num}`, k=seen[key]=(seen[key]||0)+1, forms=(PV.forms[key]||{}).forms||[];
+      const here=(occ[key]||[])[k-1]||forms[0]||'';
+      const sp=document.createElement('span'); sp.className=`tok t-${p}`+(showOrig?' orig':'');
+      sp.dataset.raw=m; sp.dataset.token=key; sp.textContent=showOrig&&here?here:m;
+      sp.title=forms.length?`${key}: ${forms.join(' · ')}`:key;
+      sp.onclick=e=>{e.stopPropagation();tokPopup(key,e);};
+      frag.appendChild(sp); last=off+m.length; return m;});
+    frag.appendChild(document.createTextNode(t.slice(last))); n.replaceWith(frag);
   });
-  if(q){const rx=new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')(?![^<]*>)','gi');html=html.replace(rx,'<mark>$1</mark>');}
-  body.innerHTML=`<div class="pv-text">${html}</div>`;
+  pvSearch();
+}
+function pvSearch(){
+  const body=$('pvBody'); if(!body)return;
+  body.querySelectorAll('mark').forEach(m=>m.replaceWith(document.createTextNode(m.textContent))); body.normalize();
+  const q=$('pvSearch').value.trim().toLowerCase(); if(!q)return;
+  const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT), nodes=[];
+  while(walker.nextNode()){const n=walker.currentNode;if(n.parentElement.closest('.tok'))continue;if(n.nodeValue.toLowerCase().includes(q))nodes.push(n);}
+  nodes.forEach(n=>{const t=n.nodeValue,i=t.toLowerCase().indexOf(q),f=document.createDocumentFragment(),mk=document.createElement('mark');
+    f.appendChild(document.createTextNode(t.slice(0,i)));mk.textContent=t.slice(i,i+q.length);f.appendChild(mk);f.appendChild(document.createTextNode(t.slice(i+q.length)));n.replaceWith(f);});
+  const first=body.querySelector('mark'); if(first)first.scrollIntoView({block:'center'});
+}
+function pvJump(key){
+  if(PV.tab==='pages'||PV.tab==='image'){pvTab(PV.kind==='pdf'?'text':'text');}
+  setTimeout(()=>{const el=$('pvBody').querySelector(`span.tok[data-token="${key}"]`);
+    if(el){el.scrollIntoView({block:'center'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1500);}},50);
+}
+function tokPopup(key,e){
+  const info=PV.forms[key]||{type:'',forms:[]}, p=key.split('_')[0];
+  const same=Object.entries(PV.forms).filter(([k,v])=>k!==key&&k.split('_')[0]===p);
+  const pop=$('tokPop');
+  pop.innerHTML=`<div><span class="badge t-${p}">${key}</span> ${esc(tokenLabel(p))}</div>
+    <div class="forms">${info.forms.map(esc).join('<br>')||'—'}</div>
+    <div class="acts">
+      <button class="btn-pv" onclick="pvExclude('${key}')">Не маскировать</button>
+      <button class="btn-pv" onclick="pvEdit('${key}')">Изменить</button>
+    </div>
+    ${same.length?`<select onchange="if(this.value)pvMerge('${key}',this.value)"><option value="">Объединить с…</option>${same.map(([k,v])=>`<option value="${k}">${k}: ${esc((v.forms||[])[0]||'')}</option>`).join('')}</select>`:''}`;
+  pop.classList.remove('hidden');
+  const x=Math.min(e.clientX,window.innerWidth-320), y=Math.min(e.clientY+12,window.innerHeight-220);
+  pop.style.left=x+'px'; pop.style.top=y+'px';
+}
+document.addEventListener('click',e=>{const pop=$('tokPop');if(pop&&!pop.contains(e.target))pop.classList.add('hidden');});
+async function pvAfterEdit(){
+  $('tokPop').classList.add('hidden');
+  const input=PV.input, sid=PV.sid;
+  await loadMappings(); await doReprocess();
+  const r=(S.lastReprocess||[]).find(x=>x.filename===input&&x.status==='ok');
+  if(r)await openPreview(sid,r.output); else closePreview();
+}
+async function pvExclude(key){
+  await apiFetch(`/api/sessions/${PV.sid}/mappings/${encodeURIComponent(key)}`,{method:'DELETE'});
+  toast(`${key}: больше не маскируется`,'info'); await pvAfterEdit();
+}
+async function pvEdit(key){
+  const f=(PV.forms[key]||{}).forms||[''];
+  $('tokPop').classList.add('hidden');
+  await editMapping(key,f[0],(PV.forms[key]||{}).type||'ФИО');
+  await pvAfterEdit();
+}
+async function pvMerge(key,into){
+  await apiFetch(`/api/sessions/${PV.sid}/mappings/${encodeURIComponent(key)}/merge`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({into})});
+  toast(`${key} объединён с ${into}`,'ok'); await pvAfterEdit();
+}
+
+// ─── LLM proposals ─────────────────────────────────────────────────────────────
+let RV=null;
+function openReview(i){
+  const item=S.files[i]; if(!item||!item.llm||!item.llm.proposal)return;
+  RV=item; const p=item.llm.proposal;
+  const row=(kind,i,label,val,extra)=>`<label style="display:flex;gap:8px;padding:5px 0;font-size:13px"><input type="checkbox" data-kind="${kind}" data-i="${i}" checked> <span><b>${label}</b> ${esc(val)} <span style="color:var(--text3)">${extra||''}</span></span></label>`;
+  let h='';
+  if(p.add.length)h+=`<h4 style="margin:6px 0">Замаскировать (пропущено правилами)</h4>`+p.add.map((a,i)=>row('add',i,tokenLabel({ФИО:'FIO',ЮЛ:'YUL',АДРЕС:'ADR',ТЕЛЕФОН:'TEL'}[a.type]||a.type),a.value)).join('');
+  if(p.remove.length)h+=`<h4 style="margin:10px 0 6px">Снять маску (не персональные данные)</h4>`+p.remove.map((r,i)=>row('remove',r.token,r.token,r.value,'— '+({ROLE:'роль стороны',POSITION:'должность',HEADING:'заголовок',LAW:'нормативный акт',PUBLIC:'госорган'}[r.category]||''))).join('');
+  if(p.merge.length)h+=`<h4 style="margin:10px 0 6px">Объединить (одно и то же)</h4>`+p.merge.map(m=>row('merge',m.token,m.token+' → '+m.into,m.value+' = '+m.into_value)).join('');
+  $('reviewBody').innerHTML=h||'Замечаний нет'; $('reviewOverlay').classList.remove('hidden');
+}
+function closeReview(){$('reviewOverlay').classList.add('hidden');RV=null;}
+async function applyReview(){
+  if(!RV)return;
+  const ch=[...$('reviewBody').querySelectorAll('input:checked')];
+  const body={add:ch.filter(c=>c.dataset.kind==='add').map(c=>+c.dataset.i),
+              remove:ch.filter(c=>c.dataset.kind==='remove').map(c=>c.dataset.i),
+              merge:ch.filter(c=>c.dataset.kind==='merge').map(c=>c.dataset.i)};
+  try{
+    const d=await apiFetch(`/api/llm-jobs/${RV.llm.id}/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    RV.output=d.output;RV.leaks=d.leaks;RV.llm.status='applied';
+    if(d.mappings){S.mappings=d.mappings;renderMap();updateMapCount();}
+    toast('Применено, файл пересобран','ok');
+  }catch(ex){toast('Ошибка: '+ex.message,'err');}
+  closeReview(); renderFileList();
+}
+
+function toggleMenu(e){e.stopPropagation();$('appMenu').classList.toggle('hidden');}
+document.addEventListener('click',()=>{const m=$('appMenu');if(m)m.classList.add('hidden');});
+async function openLogs(){try{const d=await apiFetch('/api/logs/open',{method:'POST'});toast('Папка журналов: '+d.dir,'info');}catch(ex){toast('Не удалось открыть: '+ex.message,'err');}}
+async function toggleVerbose(){
+  const cur=(await apiFetch('/api/logs')).verbose;
+  if(!cur&&!confirm('Подробный журнал записывает фрагменты текста и значения — для разбора сложного случая. Выключится сам при перезапуске. Включить?'))return;
+  const d=await apiFetch('/api/logs/verbose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!cur})});
+  $('verboseBtn').textContent='📝 Подробный журнал: '+(d.verbose?'вкл':'выкл');
+}
+async function toggleArchive(){
+  S.showArchive=!S.showArchive;
+  $('archiveBtn').textContent=S.showArchive?'🗄 Скрыть архив записей':'🗄 Показать архив записей';
+  await loadMappings();
 }
 
 function sicoFor(s){return s==='ok'?'✅':s==='err'?'❌':s==='loading'?'⏳':'';}
@@ -998,20 +1197,20 @@ async function doProcess(){
   $('procTxt').textContent='Обработка...';
 
   const pm = S.procMode;
-  const useSpacy = (pm === 'regex_spacy' || pm === 'regex_spacy_llm');
-  const useLlm   = S.mode === 'anonymize'
-    && (pm === 'llm_only' || pm === 'regex_spacy_llm')
-    && !!$('llmModelSelect').value;
-
-  if (useLlm) {
+  const engine = S.mode !== 'anonymize' ? 'fast'
+    : ({regex_spacy:'fast', regex_spacy_llm:'accurate', llm_only:'llm_only'}[pm] || 'fast');
+  if (engine !== 'fast' && !$('llmModelSelect').value) {
+    toast('Выберите модель нейросети в панели LLM или переключитесь на «Быстро»','err');
+  }
+  if (engine === 'llm_only') {
     _llmPollTimer = setInterval(pollLlmProgress, 2000);
   }
 
   const fd=new FormData();
   fd.append('mode',S.mode);
   fd.append('session_id',S.active.id);
-  fd.append('use_spacy', useSpacy ? 'true' : 'false');
-  fd.append('use_llm', useLlm ? 'true' : 'false');
+  fd.append('engine', engine);
+  fd.append('use_spacy', engine === 'llm_only' ? 'false' : 'true');
   pending.forEach(x=>fd.append('files',x.file));
 
   try{
@@ -1020,7 +1219,9 @@ async function doProcess(){
     S.lastSid=d.session_id;
     d.results.forEach(r=>{
       const item=S.files.find(x=>x.file.name===r.filename&&x.status==='loading');
-      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;}
+      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;
+        item.restore=r.restore||null;item.applyErrors=r.apply_errors||0;
+        if(r.llm_job){item.llm={id:r.llm_job,status:'running'};pollReview(item);}}
     });
     if(d.mappings){S.mappings=d.mappings;renderMap();updateMapCount();}
     const ok=d.results.filter(r=>r.status==='ok').length,tot=d.results.length;
@@ -1054,6 +1255,11 @@ async function doReprocess() {
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
+    (d.results||[]).forEach(r=>{ if(r.status!=='ok')return;
+      const it=S.files.find(x=>x.status==='ok'&&x.file&&x.file.name===r.filename);
+      if(it){it.output=r.output;it.leaks=r.leaks||it.leaks;} });
+    renderFileList();
+    S.lastReprocess = d.results||[];
     const ok = d.results?.filter(r => r.status === 'ok').length || 0;
     if (ok > 0) {
       toast(`Переобработано: ${ok} файл(ов)`, 'ok');
@@ -1078,7 +1284,7 @@ function showReprocessBtn() {
 // ─── Mappings ─────────────────────────────────────────────────────────────────
 async function loadMappings(){
   if(!S.active)return;
-  S.mappings=await apiFetch(`/api/sessions/${S.active.id}/mappings`);
+  S.mappings=await apiFetch(`/api/sessions/${S.active.id}/mappings`+(S.showArchive?'?all=1':''));
   renderMap();updateMapCount();updateAddManualBtn();
 }
 
@@ -1092,6 +1298,7 @@ function groupMappings(list){
   const by=new Map();
   for(const m of list){
     if(!by.has(m.token))by.set(m.token,{...m,forms:[]});
+    if(m.status==='active')by.get(m.token).status='active';
     const g=by.get(m.token);
     if(m.original_form&&!g.forms.includes(m.original_form))g.forms.push(m.original_form);
     if(m.canonical_edited)g.canonical_form=m.canonical_form;
@@ -1107,8 +1314,9 @@ function renderMap(search='',typeF=''){
   tbody.innerHTML=data.map(m=>{
     const p=m.token.split('_')[0];
     const forms=m.forms.map((f,i)=>i?`<span style="color:var(--text2)">${esc(f)}</span>`:esc(f)).join(' · ');
-    return `<tr>
-      <td class="td-token">${esc(m.token)}</td>
+    const st=m.status&&m.status!=='active'?` <span style="font-size:10px;color:var(--text3)">(${m.status==='excluded'?'не маскируется':'заменена'})</span>`:'';
+    return `<tr class="${m.status&&m.status!=='active'?'inactive':''}">
+      <td class="td-token">${esc(m.token)}${st}</td>
       <td title="${m.forms.length>1?'Все формы этого лица/организации в документе — одна метка':''}">${forms}</td>
       <td>${esc(m.canonical_form||'')}</td>
       <td><span class="badge t-${p}">${tokenLabel(p)}</span></td>

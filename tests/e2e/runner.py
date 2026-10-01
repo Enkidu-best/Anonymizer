@@ -38,7 +38,7 @@ class Client:
 
     def process(self, sid, path: Path, mode='anonymize', spacy=True, llm=False, name=None):
         data = {'mode': mode, 'session_id': sid, 'use_spacy': str(spacy).lower(),
-                'use_llm': str(llm).lower(),
+                'use_llm': str(llm).lower(), 'engine': 'accurate' if llm else 'fast',
                 'files': (io.BytesIO(Path(path).read_bytes()), name or Path(path).name)}
         d = self.json('post', '/api/process', data=data, content_type='multipart/form-data')
         r = d['results'][0]
@@ -79,6 +79,26 @@ def run_document(client: Client, src: Path, work: Path, spacy=True, llm=False, l
     t = time.time()
     r = client.process(sid, src, spacy=spacy, llm=llm)
     rep['times']['anonymize'] = round(time.time() - t, 2)
+    if llm and r.get('llm_job'):
+        # «Точно»: wait for the background review, apply everything it proposes
+        st = {}
+        for _ in range(600):
+            st = client.json('get', f'/api/llm-jobs/{r["llm_job"]}')
+            if st['status'] != 'running':
+                break
+            time.sleep(0.5)
+        rep['times']['llm_review'] = round(time.time() - t, 1)
+        pr = st.get('proposal') or {}
+        rep['llm'] = {'status': st.get('status'), 'add': len(pr.get('add', [])),
+                      'remove': len(pr.get('remove', [])), 'merge': len(pr.get('merge', []))}
+        if st.get('status') == 'done' and (pr.get('add') or pr.get('remove') or pr.get('merge')):
+            res = client.json('post', f'/api/llm-jobs/{r["llm_job"]}/apply',
+                              json={'add': list(range(len(pr['add']))),
+                                    'remove': [x['token'] for x in pr['remove']],
+                                    'merge': [x['token'] for x in pr['merge']]})
+            r = dict(r, output=res['output'])
+        elif st.get('status') != 'done':
+            rep['errors'].append(f'llm_review:{st.get("status")}')
     anon = client.download(sid, r['output'], work / ('anon' + Path(r['output']).suffix))
     maps = client.mappings(sid)
     rep['found'] = dict(Counter(m['token'].rsplit('_', 1)[0] for m in {m['token']: m for m in maps}.values()))

@@ -407,7 +407,9 @@ def test_preview_and_auto_session_name(page, server, tmp_path):
     page.wait_for_selector('#pvOverlay:not(.hidden) .tok')
     assert page.locator('#pvBody .tok').count() > 10
     assert 'Белозёров' not in page.inner_text('#pvBody')
-    expect(page.locator('#pvLeak .pv-leak.ok')).to_be_visible()
+    expect(page.locator('#pvSide .pv-leak.ok')).to_be_visible()
+    assert page.locator('#pvSide .pv-ent').count() >= 10        # entity list in the side panel
+    assert page.locator('#pvBody .docx-wrapper').count() == 1   # rendered like in Word
     page.check('#pvOrig')
     assert 'Белозёров' in page.inner_text('#pvBody')
     assert 'А.Л. Белозёров' in page.inner_text('#pvBody')   # exact form of the signature

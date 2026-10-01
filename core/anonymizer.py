@@ -628,7 +628,7 @@ def _validate_spacy_org(text: str) -> bool:
     if _PUBLIC_ORG_RE.search(raw):
         return False
     if raw.count('«') != raw.count('»') or raw.count('"') % 2:
-        return False   # fragment cut inside quotes: «КД «СМС»
+        return False   # fragment cut inside quotes: «КД «Вектор»
     if raw.upper() in _NOT_ORG_TOKENS:
         return False
     t = raw.strip('«»"\'(),.;:—–-')
@@ -1219,7 +1219,7 @@ def make_finder(replacements: Dict[str, str], log: list = None, places: list = N
     return find
 
 
-def make_rev_finder(db_path, session_id: str, occurrences: dict = None):
+def make_rev_finder(db_path, session_id: str, occurrences: dict = None, file_key: str = None):
     """find(text) → [(start, end, original)], restoring by place.
 
     A place whose anonymized text is unchanged (same fingerprint) gets the exact forms
@@ -1229,15 +1229,20 @@ def make_rev_finder(db_path, session_id: str, occurrences: dict = None):
     Mappings marked «не маскировать» or replaced still restore (never deleted)."""
     from core.db import get_reverse_info, get_places
     info = get_reverse_info(db_path, session_id)
-    places = get_places(db_path, session_id)
+    places = get_places(db_path, session_id, file_key)
     stats = {'tokens': 0, 'restored': 0, 'exact': 0, 'check_case': 0, 'unknown': []}
+    used: Dict[str, int] = {}
 
     def find(text):
         out = []
         matches = list(TOKEN_LOOSE_RE.finditer(text))
         if not matches:
             return out
-        items = places.get(place_hash(text))
+        h = place_hash(text)
+        variants = places.get(h) or []
+        k_place = used.get(h, 0)              # the k-th place with this fingerprint
+        used[h] = k_place + 1
+        items = variants[min(k_place, len(variants) - 1)] if variants else None
         for k, m in enumerate(matches):
             key = _token_key(m)
             stats['tokens'] += 1
@@ -1265,7 +1270,7 @@ def anonymize_text(text: str, db_path, session_id: str, use_spacy: bool = True,
     _, reps = anonymize_text_pipeline(text, db_path, session_id, use_spacy=use_spacy, use_llm=use_llm)
     log, places = [], []
     out = apply_spans(text, make_finder(reps, log, places)(text))
-    save_places(db_path, session_id, places)
+    save_places(db_path, session_id, places, file_key='__text__')
     occ: Dict[str, list] = {}
     for tok, orig in log:
         occ.setdefault(tok, []).append(orig)

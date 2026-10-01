@@ -9,6 +9,7 @@ Recommended models (install with: ollama pull <name>):
 
 import json
 import re
+import time
 import threading
 import urllib.request
 import urllib.error
@@ -223,6 +224,8 @@ def preload_model_async():
     threading.Thread(target=_do, daemon=True).start()
 
 
+NUM_CTX = 8192
+
 ENTITY_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -240,17 +243,22 @@ ENTITY_SCHEMA = {
 
 
 def _ollama_generate(prompt: str, system: str,
-                     timeout: int = 90) -> str:
+                     timeout: int = 90, schema: dict = None, num_ctx: int = None,
+                     num_predict: int = 2048) -> str:
     model = _llm_model or DEFAULT_MODEL
+    if num_ctx is None:
+        # ONE fixed context size: Ollama reloads the model whenever num_ctx changes, and two
+        # requests with different sizes keep two copies in memory (16 GB Mac → swap, 0.5 tok/s)
+        num_ctx = NUM_CTX
     body = json.dumps({
         'model':  model,
         'prompt': prompt,
         'system': system,
         'stream': False,
-        'keep_alive': '10m',
+        'keep_alive': '30m',
         'think': False,              # Qwen3-family: no hidden reasoning eating the answer budget
-        'format': ENTITY_SCHEMA,     # structured output: always valid JSON of this shape
-        'options': {'temperature': 0.0, 'num_predict': 2048, 'num_ctx': 8192},
+        'format': schema or ENTITY_SCHEMA,   # structured output: always valid JSON of this shape
+        'options': {'temperature': 0.0, 'num_predict': num_predict, 'num_ctx': num_ctx},
     }).encode()
 
     req = urllib.request.Request(
@@ -259,9 +267,29 @@ def _ollama_generate(prompt: str, system: str,
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
+    t0 = time.time()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
+    _log_metrics(model, data, time.time() - t0, len(prompt))
     return data.get('response', '')
+
+
+LAST_METRICS: list = []
+
+
+def _log_metrics(model, data, wall, prompt_chars):
+    """Ollama timings per call → journal: tokens read/generated and tokens per second.
+    A large eval_count for a short JSON answer means the model is «thinking»."""
+    from core import log
+    ns = 1e9
+    pe, pd = data.get('prompt_eval_count', 0), data.get('prompt_eval_duration', 0) / ns
+    ec, ed = data.get('eval_count', 0), data.get('eval_duration', 0) / ns
+    m = {'model': model, 'wall_s': round(wall, 2), 'load_s': round(data.get('load_duration', 0) / ns, 2),
+         'prompt_chars': prompt_chars, 'prompt_tokens': pe, 'prompt_tok_s': round(pe / pd, 1) if pd else None,
+         'gen_tokens': ec, 'gen_tok_s': round(ec / ed, 1) if ed else None,
+         'answer_chars': len(data.get('response', '')), 'thinking_chars': len(data.get('thinking', '') or '')}
+    LAST_METRICS.append(m)
+    log.event('llm_call', **m)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
