@@ -328,6 +328,61 @@ def _cadastral(text):
     return [Hit(m.start(), m.end(), 'КАДАСТР') for m in _CADASTRAL.finditer(text)]
 
 
+
+# ── Real estate: registration records, certificates, conditional numbers ─────
+
+_REG_CTX = re.compile(r'регистрац|услов\w*[^\S\n]+номер|инвентарн\w*[^\S\n]+номер|кадастров|запис\w*[^\S\n]+(?:в[^\S\n]+)?ЕГРН', _I)
+_REG_NUM = re.compile(r'(?<![\w/:\-.])(\d{2}[\d:/\-]{6,40}\d)(?![\w/:\-])')
+_CERT = re.compile(
+    r'(?<![\w])(\d{2}[^\S\n]?-?[^\S\n]?[А-ЯЁA-Z]{2})\.?[^\S\n]*(?:№|N|No)?[.\s]*?(\d{6,9})(?!\d)', re.UNICODE)
+_CERT_CTX = re.compile(r'свидетельств|бланк', _I)
+
+
+def _realty(text: str) -> List[Hit]:
+    hits = []
+    for m in _REG_NUM.finditer(text):
+        v = m.group(1)
+        seps = len(re.findall(r'[:/\-]', v))
+        if seps < 2 or not (re.search(r'(?:19|20)\d{2}', v) or v.count(':') >= 2):
+            continue
+        if _CADASTRAL.fullmatch(v):
+            continue   # plain cadastral number — own detector
+        right = text[m.end():m.end() + 40]
+        if _ctx(_REG_CTX, text, m.start(), 80) or _REG_CTX.search(right) or \
+                re.search(r'запис\w*[^\d]{0,30}$', _left(text, m.start(), 40), _I):
+            hits.append(Hit(m.start(1), m.end(1), 'НЕДВИЖ'))
+    for m in _CERT.finditer(text):
+        if _ctx(_CERT_CTX, text, m.start(), 150):
+            hits.append(Hit(m.start(2), m.end(2), 'НЕДВИЖ'))
+    return hits
+
+
+# ── Numbers right after their keyword, even with OCR noise / bad checksum ────
+
+_KW_NUM = re.compile(r'(?<![\wА-Яа-я])(ОГРНИП|ОГРН|ИНН|КПП|БИК)[^\S\n]*[:№]?[^\S\n]*(\d[\d ]{7,19}\d)(?!\d)')
+_KW_LEN = {'ОГРН': (13, 13), 'ОГРНИП': (15, 15), 'ИНН': (10, 12), 'КПП': (9, 9), 'БИК': (9, 9)}
+
+
+def _keyword_numbers(text: str) -> List[Hit]:
+    hits = []
+    for m in _KW_NUM.finditer(text):
+        lo, hi = _KW_LEN[m.group(1)]
+        d = V.digits(m.group(2))
+        if lo <= len(d) <= hi:
+            hits.append(Hit(m.start(2), m.end(2), {'ОГРНИП': 'ОГРН'}.get(m.group(1), m.group(1))))
+    return hits
+
+
+# ── Foreign company registration numbers ─────────────────────────────────────
+
+_COMPANY_REG = re.compile(
+    r'(?:(?<![A-Za-z])HE[^\S\n]?|рег\.?[^\S\n]*(?:№|номер)[^\S\n]*(?:HE[^\S\n]?)?)(\d{4,8})(?!\d)', re.UNICODE)
+
+
+def _company_reg(text):
+    return [Hit(m.start(1), m.end(1), 'РЕГНОМЕР') for m in _COMPANY_REG.finditer(text)]
+
+
 # ── Other identifiers ────────────────────────────────────────────────────────
 
 _PLATE = re.compile(r'(?<![\wА-Яа-я])[АВЕКМНОРСТУХABEKMHOPCTYX][^\S\n]?\d{3}[^\S\n]?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}[ ]?\d{2,3}(?![\w])',
@@ -360,6 +415,16 @@ _OPF_TAIL = re.compile(
 _FOREIGN_ORG = re.compile(
     r'((?:[A-Z][A-Za-z0-9&\'\-]*\.?[^\S\n]+){0,4}[A-Z][A-Za-z0-9&\'\-]*)[^\S\n]*,?[^\S\n]+'
     r'(?:LLC|L\.L\.C\.|(?i:Ltd)\.?|(?i:Limited)|Inc\.?|Corp\.?|Corporation|GmbH|AG|S\.A\.|SA|B\.V\.|BV|N\.V\.|PLC|LLP|LP|SARL|S\.?r\.?l\.?|Pte\.?)(?![A-Za-z])')
+_CORP_NOUN = (r'(?:Group|Holdings?|Properties|Capital|Investments?|Trading|Partners|Management|Ventures|'
+              r'Development|Industries|Enterprises|International|Assets|Finance|Realty|Estates?)')
+_FOREIGN_ORG2 = re.compile(
+    r'(?<![A-Za-z])((?:[A-Z][A-Za-z0-9]+|[A-Z]\d+)(?:[^\S\n]+[A-Z][A-Za-z0-9]+){0,2}?)[^\S\n]+'
+    + _CORP_NOUN + r'(?:[^\S\n]*&[^\S\n]*' + _CORP_NOUN + r')?(?![A-Za-z])')
+_GENERIC_LATIN = {'Group', 'Holding', 'Holdings', 'Properties', 'Capital', 'Investment', 'Investments',
+                  'Trading', 'Partners', 'Management', 'Ventures', 'Development', 'Industries',
+                  'Enterprises', 'International', 'Assets', 'Finance', 'Realty', 'Estate', 'Estates',
+                  'Limited', 'Ltd', 'LLC', 'Inc', 'Corp', 'Corporation', 'Company', 'Bank', 'The',
+                  'Trust', 'Fund', 'Global', 'Asset', 'Real'}
 _GENERIC_ORG_QUOTED = re.compile(
     r'(?<![\wА-Яа-я])(?:[Оо]бществ\w*|[Кк]омпани\w*|[Фф]ирм\w*|[Пп]редприяти\w*)[^\S\n]+'
     r'[«"“„]([А-ЯЁA-Z0-9][^«»"“”„\n]{1,80})[»"”“]', _U)
@@ -396,6 +461,10 @@ def _orgs(text: str) -> List[Hit]:
                 continue
             hits.append(Hit(m.start(1), m.end(1), 'ЮЛ'))
     for m in _FOREIGN_ORG.finditer(text):
+        hits.append(Hit(m.start(1), m.end(1), 'ЮЛ'))
+    for m in _FOREIGN_ORG2.finditer(text):
+        if m.group(1) in _GENERIC_LATIN:
+            continue
         hits.append(Hit(m.start(1), m.end(1), 'ЮЛ'))
     return hits
 
@@ -561,7 +630,7 @@ def _persons(text: str) -> List[Hit]:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-DETECTORS = [_passport, _phones, _grouped_numbers, _spaced_numbers, _numeric, _swift, _birth,
+DETECTORS = [_passport, _realty, _keyword_numbers, _company_reg, _phones, _grouped_numbers, _spaced_numbers, _numeric, _swift, _birth,
              _cadastral, _other, _addresses, _orgs, _persons]
 
 

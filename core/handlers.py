@@ -488,17 +488,45 @@ def _token_fontsize(page, token, rect, base):
     return max(min(base * 0.88, rect.width / width * 0.98, rect.height * 0.9), 3)
 
 
+def text_layer_ok(text: str) -> bool:
+    """False for a broken text layer: a scan whose OCR text uses a wrong font map
+    («AoroBopy apeHAbl» instead of «Договору аренды») or is otherwise unreadable."""
+    from core.detectors import _unknown
+    words = re.findall(r'[A-Za-zА-ЯЁа-яё]{3,}', text)
+    if len(words) < 15:
+        return True
+    camel = sum(1 for w in words if re.search(r'[a-zа-яё][A-ZА-ЯЁ]', w)) / len(words)
+    if camel > 0.15:
+        return False
+    cyr = [w for w in words if re.search('[А-ЯЁа-яё]', w)]
+    if len(cyr) >= 15 and sum(1 for w in cyr if not _unknown(w)) / len(cyr) < 0.5:
+        return False
+    return True
+
+
+def _drop_text_layer(page, words):
+    import pymupdf
+    for w in words:
+        page.add_redact_annot(pymupdf.Rect(w[:4]), fill=None)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                          graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
+
+
 def _anon_pdf(src, out, session_id, db_path, use_spacy, use_llm):
     import pymupdf
     doc = pymupdf.open(str(src))
+    from core import ocr
     pages = []
     for page in doc:
         words, text, owner = _page_words(page)
-        if text.strip():
+        if text.strip() and (text_layer_ok(text) or not ocr.available()):
             pages.append(('text', words, text, owner, None))
         else:
+            if text.strip():
+                _drop_text_layer(page, words)   # garbage OCR layer of a scan: remove, OCR again
             lines, scale = _ocr_page_lines(page)
-            pages.append(('ocr', lines, '\n'.join(l.text for l in lines), None, scale))
+            ocr_text, offs = ocr.layout(lines, page.rect.width / scale)
+            pages.append(('ocr', offs, ocr_text, None, scale))
 
     toc = doc.get_toc()
     full = '\n'.join(p[2] for p in pages) + '\n' + '\n'.join(t[1] for t in toc)
@@ -522,23 +550,21 @@ def _anon_pdf(src, out, session_id, db_path, use_spacy, use_llm):
                     page.add_redact_annot(r, text=label, fontname='helv',
                                           fontsize=_token_fontsize(page, token, r, base),
                                           fill=(1, 1, 1), text_color=(0, 0, 0))
-            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+            # pixels too: a scan with an invisible text layer shows the value in the image
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
         else:
-            line_off = []
-            pos = 0
-            for l in items:
-                line_off.append(pos)
-                pos += len(l.text) + 1
             for s, e, token in find(text):
-                for l, off in zip(items, line_off):
+                first = True
+                for l, off in items:
                     a, b = max(s, off), min(e, off + len(l.text))
                     if a >= b:
                         continue
                     x0, y0, x1, y1 = l.box_for(a - off, b - off)
                     r = pymupdf.Rect(x0 * scale - 1, y0 * scale - 1, x1 * scale + 1, y1 * scale + 1)
-                    page.add_redact_annot(r, text=token if a == s else '', fontname='helv',
+                    page.add_redact_annot(r, text=token if first else '', fontname='helv',
                                           fontsize=_token_fontsize(page, token, r, base),
                                           fill=(0, 0, 0), text_color=(1, 1, 1))
+                    first = False
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
 
     from core.anonymizer import apply_spans
@@ -632,7 +658,7 @@ def _anon_image(src, out, session_id, db_path, use_spacy, use_llm):
     buf = io.BytesIO()
     img.save(buf, 'PNG')
     lines = ocr.recognize(buf.getvalue(), img.size)
-    text = '\n'.join(l.text for l in lines)
+    text, offs = ocr.layout(lines, img.size[0])
     reps = _detect(text, session_id, db_path, use_spacy, use_llm)
     # Photos: the small region part of a licence plate is often misread by OCR
     # («Н385ЕУ 777» → «H385EY ML») — the series alone is enough, mask the whole plate line
@@ -644,19 +670,23 @@ def _anon_image(src, out, session_id, db_path, use_spacy, use_llm):
     find = _finder(reps)
     draw = ImageDraw.Draw(img)
     boxes = 0
-    off = 0
-    for l in lines:
-        for s, e, token in find(l.text):
-            x0, y0, x1, y1 = l.box_for(s, e)
+    for s, e, token in find(text):
+        first = True
+        for l, off in offs:
+            a, b = max(s, off), min(e, off + len(l.text))
+            if a >= b:
+                continue
+            x0, y0, x1, y1 = l.box_for(a - off, b - off)
             pad = max(2, (y1 - y0) * 0.15)
             draw.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad], fill=(0, 0, 0))
-            try:
-                font = ImageFont.load_default(size=max(int((y1 - y0) * 0.8), 8))
-                draw.text((x0, y0), token, fill=(255, 255, 255), font=font)
-            except Exception:
-                pass
+            if first:
+                try:
+                    font = ImageFont.load_default(size=max(int((y1 - y0) * 0.8), 8))
+                    draw.text((x0, y0), token, fill=(255, 255, 255), font=font)
+                except Exception:
+                    pass
+            first = False
             boxes += 1
-        off += len(l.text) + 1
     fmt = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.tif': 'TIFF', '.tiff': 'TIFF'}.get(out.suffix.lower(), 'PNG')
     img.save(out, fmt, quality=92) if fmt == 'JPEG' else img.save(out, fmt)
     return {'entities_found': len(reps), 'boxes': boxes}

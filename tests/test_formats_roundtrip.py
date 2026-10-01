@@ -66,3 +66,17 @@ def test_rtf_cyrillic_round_trip_with_uc0(tmp_path, tmp_db, session_id):
     r2 = process_uploaded_file(tmp_path / 'a' / r['output_filename'], tmp_path / 'b', session_id, tmp_db, 'deanonymize')
     back, _ = decode((tmp_path / 'b' / r2['output_filename']).read_bytes())
     assert back == decode(raw)[0]
+
+
+def test_broken_text_layer_detected():
+    from core.handlers import text_layer_ok
+    garbage = ('AoroBopy apeHAbl Hex[noro noMerqeH],re or <01> oxrs6pn 2013 roAa r. Mocxaa '
+               'O6qecrBo c orpaHhqenxofr orBercrBeHHocrbro nMeHyeMoe B AaflbHefrurevr Bacrnueaofr Enenur '
+               'MrxafrnoBHbr gefrcreypulero Ha ocHoBaHLAtA ycraBa')
+    good = ('Общество с ограниченной ответственностью, именуемое в дальнейшем Арендодатель, в лице '
+            'генерального директора, действующего на основании устава, с одной стороны, и Арендатор, '
+            'заключили настоящее соглашение о нижеследующем')
+    assert not text_layer_ok(garbage)
+    assert text_layer_ok(good)
+    assert text_layer_ok('Share purchase agreement between the Seller and the Buyer dated twelve March '
+                         'two thousand and twenty five regarding the shares of the Company and other terms')

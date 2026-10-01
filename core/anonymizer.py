@@ -94,7 +94,7 @@ def _p(pattern):
 _TOKEN_PREFIXES = (
     'FIO', 'YUL', 'INN', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
     'PASSPORT', 'TEL', 'EMAIL', 'SWIFT', 'ADR', 'DOB', 'LIC', 'URL',
-    'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT',
+    'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT', 'REALTY', 'REG',
     'ДАТАРОЖД',
 )
 _TOKEN_PFX_ALT = '|'.join(_TOKEN_PREFIXES)
@@ -537,8 +537,27 @@ _HAS_PATRONYMIC_RE = re.compile(
 )
 
 
+def _name_like_word(w: str) -> bool:
+    """A word that can be part of a person's name: dictionary surname/name/patronymic,
+    an initial, or a capitalized word unknown to the dictionary («Кацнельс»)."""
+    from core.detectors import _tags, _unknown, _SURN_END
+    w = w.strip('.,;:()«»"\'')
+    if not w or re.fullmatch(r'[А-ЯЁA-Z]\.?(?:[А-ЯЁA-Z]\.?)?', w):
+        return True
+    cap = w.capitalize() if w.isupper() else w
+    tags = _tags(cap)
+    if tags & {'Surn', 'Name', 'Patr'}:
+        return True
+    return _unknown(cap) and bool(_SURN_END.search(cap.lower()) or not re.search('[а-яё]', cap.lower()))
+
+
 def _validate_spacy_fio(text: str) -> bool:
     """Strict FIO check for spaCy outputs. See test_bugs_v23 for examples."""
+    words = [w for w in re.split(r'[\s]+', text.strip()) if w]
+    # every word must look like a part of a name: «Витрина», «Стороной»,
+    # «Арендодателя Арендная» are ordinary words that spaCy tags as PER
+    if not words or not all(_name_like_word(w) for w in words):
+        return False
     t = text.strip().strip('«»"\'(),.;:—–-')
     if not t or len(t) < 3 or len(t) > 80:
         return False
@@ -594,9 +613,20 @@ _OPF_ANY_RE = re.compile(
 )
 
 
+# Public bodies and courts are not secret («курс Центрального банка России», «Росреестр»)
+_PUBLIC_ORG_RE = re.compile(
+    r'центральн\w*\s+банк|банк\w*\s+росси|^цб\b|росреестр|федеральн\w*\s+налогов|^и?фнс\b|'
+    r'министерств|правительств|арбитражн\w*\s+суд|верховн\w*\s+суд|конституционн\w*\s+суд|'
+    r'федеральн\w*\s+служб|управлени\w*\s+федеральн|государственн\w*\s+дум|пенсионн\w*\s+фонд|'
+    r'социальн\w*\s+фонд|прокуратур|^суд\b|^мвд\b|^фссп\b|^асв\b|агентств\w*\s+по\s+страхованию',
+    re.IGNORECASE)
+
+
 def _validate_spacy_org(text: str) -> bool:
     """Strict ORG check. See test_bugs_v23 for the cases that drove these rules."""
     raw = text.strip()
+    if _PUBLIC_ORG_RE.search(raw):
+        return False
     t = raw.strip('«»"\'(),.;:—–-')
     if not t or len(t) < 2 or len(t) > 80:
         return False
@@ -615,7 +645,7 @@ def _validate_spacy_org(text: str) -> bool:
     if 2 <= len(t) <= 10 and re.fullmatch(r'[A-ZА-ЯЁ0-9]+', t):
         # a heading word in capitals («ФИНАНСОВОЙ») is not an acronym
         from core.detectors import _unknown
-        return len(t) <= 4 or _unknown(t.capitalize())
+        return _unknown(t.capitalize())
 
     # Brand-style single token (MasterCard, Yandex, Сбербанк) — but not an ordinary
     # dictionary word that merely starts a sentence («Отчет», «Персонал»)
@@ -962,6 +992,43 @@ def _apply_global_known(text: str, db_path, session_id: str,
 _CAP_WORD_RE = re.compile(r'(?<![\w\[])[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?(?![\w\]])|(?<![\w\[])[А-ЯЁ]{3,}(?![\w\]])')
 
 
+_ALIAS_RE = re.compile(r'\[(YUL_\d+)\]»?([^\[\]\n(]{0,40}?)\(([A-ZА-ЯЁ][A-ZА-ЯЁ0-9&\-]{1,8})\)')
+
+
+def _propagate_orgs(text: str, db_path, session_id: str, exclusions: set = None):
+    """«Northwind Trading & Investments (NTI)… NTI получила» and «Zelora Holding… Zelora подала»
+    → one token. Only distinctive words spread: Latin names that are not corporate nouns,
+    abbreviations, words absent from the dictionary («Вектрум»); never ordinary words."""
+    from core.db import add_alias
+    from core.detectors import _GENERIC_LATIN, _unknown
+    opf = re.compile(r'(?:' + _OPF_SHORT + r')$')
+    for m in _ALIAS_RE.finditer(text):
+        abbr = m.group(3)
+        if not opf.match(abbr) and not (exclusions and (abbr, 'ЮЛ') in exclusions):
+            add_alias(db_path, session_id, m.group(1), abbr, 'ЮЛ')
+    words = {}
+    for mp in get_session_mappings(db_path, session_id):
+        if mp['entity_type'] != 'ЮЛ':
+            continue
+        for w in re.findall(r'[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё0-9&\-]*', mp['original_form']):
+            if len(w) < 2 or w in _GENERIC_LATIN or opf.match(w):
+                continue
+            latin = w.isascii() and w[0].isupper()
+            abbr = w.isupper() and len(w) <= 8
+            if latin or abbr or (len(w) >= 4 and w[0].isupper() and _unknown(w)):
+                words.setdefault(w, mp['token'])
+    if not words:
+        return text, {}
+    reps = {w: f'[{t}]' for w, t in words.items()}
+    spans = [(a, b, v) for a, b, v in replace_spans(text, reps)
+             if not (exclusions and (text[a:b], 'ЮЛ') in exclusions)]
+    for a, b, v in spans:
+        add_alias(db_path, session_id, v.strip('[]'), text[a:b], 'ЮЛ')
+    if spans:
+        print(f'[PROPAGATE] {len(spans)} company mention(s)')
+    return apply_spans(text, spans), {text[a:b]: v for a, b, v in spans}
+
+
 def _propagate_surnames(text: str, db_path, session_id: str, exclusions: set = None):
     """«Белозёров обязуется…» after «Белозёров Аркадий Львович» → the same token.
 
@@ -1045,6 +1112,10 @@ def anonymize_text_pipeline(
             all_reps.update(reps4)
         except Exception as ex:
             print(f'[LLM] Pass failed: {ex}')
+
+    # Companies: abbreviation in brackets after a name, distinctive words of names elsewhere
+    text, reps_org = _propagate_orgs(text, db_path, session_id, exclusions)
+    all_reps.update(reps_org)
 
     # Propagation: surnames of found persons in any case form, anywhere in the text
     text, reps_prop = _propagate_surnames(text, db_path, session_id, exclusions)

@@ -203,6 +203,8 @@ _PREFIX = {
     'ВУ':       'DL',
     'НИК':      'NICK',
     'НОТАРИУС': 'NOT',
+    'НЕДВИЖ':   'REALTY',
+    'РЕГНОМЕР': 'REG',
     'FIO':      'FIO',
     'YUL':      'YUL',
     'ADDR_PHYS': 'ADR',
@@ -292,6 +294,13 @@ def get_or_create_token(db_path, session_id: str,
             (session_id, token, original_form, canonical_form, entity_type, int(canonical_edited))
         )
     return token
+
+
+def add_alias(db_path, session_id: str, token: str, original: str, entity_type: str):
+    """Another written form of an existing entity («NTI» for «Northwind Trading & Investments»)."""
+    with get_conn(db_path) as conn:
+        conn.execute('INSERT OR IGNORE INTO mappings (session_id, token, original_form, canonical_form, entity_type) '
+                     'VALUES (?,?,?,?,?)', (session_id, token, original, original, entity_type))
 
 
 def delete_mapping(db_path, session_id: str, token: str):

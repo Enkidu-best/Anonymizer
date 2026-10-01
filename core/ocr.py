@@ -71,3 +71,49 @@ def recognize(png_bytes: bytes, size: Tuple[int, int]) -> List[Line]:
     # reading order: top to bottom, then left to right
     lines.sort(key=lambda l: (round(l.box[1] / 12), l.box[0]))
     return lines
+
+
+def layout(lines: List[Line], width: float) -> Tuple[str, List[Tuple[Line, int]]]:
+    """Reading-order text of OCR lines and each line's offset in it.
+
+    Two-column blocks (requisites «Арендодатель | Арендатор») are read column by
+    column; lines of one paragraph are joined with a space (a name or an address
+    wrapped to the next line stays one match), paragraphs with a newline."""
+    if not lines:
+        return '', []
+    mid = width * 0.45
+    right = [l for l in lines if l.box[0] >= mid]
+    # a real right column: several lines start there
+    two_cols = len(right) >= 4
+    cols = [[l for l in lines if not two_cols or l.box[0] < mid], right if two_cols else []]
+    order = []
+    for col in cols:
+        # rows: pieces of one visual line (OCR may split it) share a vertical band
+        rows = []
+        for l in sorted(col, key=lambda l: (l.box[1] + l.box[3]) / 2):
+            cy = (l.box[1] + l.box[3]) / 2
+            h = l.box[3] - l.box[1]
+            if rows and abs(rows[-1][0] - cy) < 0.5 * h:
+                rows[-1][1].append(l)
+            else:
+                rows.append([cy, [l]])
+        for _, row in rows:
+            order.extend(sorted(row, key=lambda l: l.box[0]))
+    text, offs = [], []
+    pos = 0
+    prev = None
+    for l in order:
+        if prev is not None:
+            h = max(prev.box[3] - prev.box[1], 1)
+            gap = l.box[1] - prev.box[3]
+            same_row = abs((l.box[1] + l.box[3]) / 2 - (prev.box[1] + prev.box[3]) / 2) < 0.5 * h
+            same_par = same_row or -0.8 * h <= gap < 1.2 * h and abs(l.box[0] - prev.box[0]) < 6 * h \
+                and not prev.text.rstrip().endswith(('.', ':', ';'))
+            sep = ' ' if same_par else '\n'
+            text.append(sep)
+            pos += 1
+        offs.append((l, pos))
+        text.append(l.text)
+        pos += len(l.text)
+        prev = l
+    return ''.join(text), offs

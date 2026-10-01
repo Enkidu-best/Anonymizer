@@ -15,7 +15,7 @@ import urllib.error
 from typing import List, Tuple
 
 OLLAMA_URL   = 'http://localhost:11434'
-DEFAULT_MODEL = 'qwen2.5:7b'
+DEFAULT_MODEL = 'qwen3:8b'   # Alibaba Qwen3, Apache-2.0, strong Russian; ~5 GB
 
 _lock        = threading.Lock()
 _llm_model   = None
@@ -223,6 +223,22 @@ def preload_model_async():
     threading.Thread(target=_do, daemon=True).start()
 
 
+ENTITY_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'entities': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {'text': {'type': 'string'}, 'type': {'type': 'string'}},
+                'required': ['text', 'type'],
+            },
+        },
+    },
+    'required': ['entities'],
+}
+
+
 def _ollama_generate(prompt: str, system: str,
                      timeout: int = 90) -> str:
     model = _llm_model or DEFAULT_MODEL
@@ -232,7 +248,9 @@ def _ollama_generate(prompt: str, system: str,
         'system': system,
         'stream': False,
         'keep_alive': '10m',
-        'options': {'temperature': 0.0, 'num_predict': 600, 'num_ctx': 4096},
+        'think': False,              # Qwen3-family: no hidden reasoning eating the answer budget
+        'format': ENTITY_SCHEMA,     # structured output: always valid JSON of this shape
+        'options': {'temperature': 0.0, 'num_predict': 2048, 'num_ctx': 8192},
     }).encode()
 
     req = urllib.request.Request(
@@ -305,7 +323,8 @@ def apply_llm_pass(text: str, db_path, session_id: str,
                 continue
             if re.search(r'\[[A-Z_]+\d+\]', original):
                 continue
-            if original not in text:
+            from core.anonymizer import contains_bounded
+            if not contains_bounded(text, original):
                 continue
 
             type_map = {
@@ -322,7 +341,8 @@ def apply_llm_pass(text: str, db_path, session_id: str,
                                              original, original, internal_type)
             bracketed = f'[{token}]'
 
-            text = text.replace(original, bracketed)
+            from core.anonymizer import replace_bounded
+            text = replace_bounded(text, {original: bracketed})
             all_replacements[original] = bracketed
             print(f'[LLM] Entity: {repr(original[:60])} -> {bracketed}')
 
