@@ -12,6 +12,7 @@ anonymize_text_pipeline() returns (anonymized_text, replacements_dict).
 import re
 import sys
 import threading
+from functools import lru_cache
 from typing import Tuple, Dict, List
 
 from core.db import get_or_create_token, get_session_mappings, get_top_patterns
@@ -82,6 +83,10 @@ def retry_ner_loading():
 # Token helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _cs(pattern):
+    return re.compile(pattern, re.UNICODE)
+
+
 def _p(pattern):
     return re.compile(pattern, re.IGNORECASE | re.UNICODE)
 
@@ -104,11 +109,14 @@ ANY_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+\]')
 PARTIAL_TOKEN_RE = re.compile(rf'\[(?:{_TOKEN_PFX_ALT})_\d+')
 
 
+@lru_cache(maxsize=256)
 def _bounded_pattern(keys):
     parts = []
     for k in sorted(keys, key=len, reverse=True):
-        pre = r'(?<![\w])' if k[:1].isalnum() else ''
-        post = r'(?![\w])' if k[-1:].isalnum() else ''
+        # numbers: only digits are a boundary («No40702…», «БИК044…» are fine);
+        # words: any letter/digit is («Иванов» ≠ «Ивановский»)
+        pre = r'(?<!\d)' if k[:1].isdigit() else r'(?<![\w])' if k[:1].isalnum() else ''
+        post = r'(?!\d)' if k[-1:].isdigit() else r'(?![\w])' if k[-1:].isalnum() else ''
         parts.append(pre + re.escape(k) + post)
     return re.compile('|'.join(parts), re.UNICODE)
 
@@ -327,53 +335,53 @@ _ADR_KW = (
 
 REGEX_PATTERNS: List[Tuple[str, list]] = [
     ('ИНН', [
-        (_p(r'ИНН\s*[:=\-]?\s*(\d{10}|\d{12})\b'), 1),
-        (_p(r'ИНН\s*/\s*(?:КПП|ОГРН)\s*[:=]?\s*(\d{10}|\d{12})\s*/'), 1),
+        (_p(r'ИНН[^\S\n]*[:=\-]?[^\S\n]*(\d{10}|\d{12})\b'), 1),
+        (_p(r'ИНН[^\S\n]*/[^\S\n]*(?:КПП|ОГРН)[^\S\n]*[:=]?[^\S\n]*(\d{10}|\d{12})[^\S\n]*/'), 1),
     ]),
     ('ОГРН', [
-        (_p(r'ОГРНИП\s*[:=]?\s*(\d{15})\b'), 1),
-        (_p(r'ОГРН\s*[:=]?\s*(\d{13})\b'), 1),
-        (_p(r'основной\s+(?:государственный\s+)?регистрационный\s+номер\s*[:№=]?\s*(\d{13,15})\b'), 1),
-        (_p(r'(?:ИНН|КПП)\s*/\s*ОГРН\s*[:=]?\s*\d{9,12}\s*/\s*(\d{13,15})\b'), 1),
+        (_p(r'ОГРНИП[^\S\n]*[:=]?[^\S\n]*(\d{15})\b'), 1),
+        (_p(r'ОГРН[^\S\n]*[:=]?[^\S\n]*(\d{13})\b'), 1),
+        (_p(r'основной[^\S\n]+(?:государственный[^\S\n]+)?регистрационный[^\S\n]+номер[^\S\n]*[:№=]?[^\S\n]*(\d{13,15})\b'), 1),
+        (_p(r'(?:ИНН|КПП)[^\S\n]*/[^\S\n]*ОГРН[^\S\n]*[:=]?[^\S\n]*\d{9,12}[^\S\n]*/[^\S\n]*(\d{13,15})\b'), 1),
         (_p(r'(?<!\d)([15]\d{12})(?!\d)'), 1),
         (_p(r'(?<!\d)(3\d{14})(?!\d)'), 1),
     ]),
     ('КПП', [
-        (_p(r'КПП\s*[:=]?\s*(\d{9})\b'), 1),
-        (_p(r'ИНН\s*/\s*КПП\s*[:=]?\s*(?:\d{10}|\d{12})\s*/\s*(\d{9})\b'), 1),
+        (_p(r'КПП[^\S\n]*[:=]?[^\S\n]*(\d{9})\b'), 1),
+        (_p(r'ИНН[^\S\n]*/[^\S\n]*КПП[^\S\n]*[:=]?[^\S\n]*(?:\d{10}|\d{12})[^\S\n]*/[^\S\n]*(\d{9})\b'), 1),
     ]),
     ('РС', [
         (_p(
-            r'(?:р(?:асч)?\.?\s*/\s*с(?:ч(?:[ёе]т)?)?\b|расч[ёе]тн\w*\s+сч[ёе]т\w*)'
-            r'\s*[:=]?\s*' + _NUM + r'?(\d{20})\b'
+            r'(?:р(?:асч)?\.?[^\S\n]*/[^\S\n]*с(?:ч(?:[ёе]т)?)?\b|расч[ёе]тн\w*[^\S\n]+сч[ёе]т\w*)'
+            r'[^\S\n]*[:=]?[^\S\n]*' + _NUM + r'?(\d{20})\b'
         ), 1),
         (_p(r'(?<!\d)(4[012]\d{18})(?!\d)'), 1),
     ]),
     ('КС', [
         (_p(
-            r'(?:к(?:ор(?:р)?)?\.?\s*/\s*с(?:ч(?:[ёе]т)?)?\b|'
-            r'корр?\.\s*сч[ёе]т\w*|корреспондентск\w+\s+сч[ёе]т\w*)'
-            r'\s*[:=]?\s*' + _NUM + r'?(\d{20})\b'
+            r'(?:к(?:ор(?:р)?)?\.?[^\S\n]*/[^\S\n]*с(?:ч(?:[ёе]т)?)?\b|'
+            r'корр?\.[^\S\n]*сч[ёе]т\w*|корреспондентск\w+[^\S\n]+сч[ёе]т\w*)'
+            r'[^\S\n]*[:=]?[^\S\n]*' + _NUM + r'?(\d{20})\b'
         ), 1),
         (_p(r'(?<!\d)(30[1-9]\d{17})(?!\d)'), 1),
     ]),
     ('БИК', [
-        (_p(r'БИК\s*[:=]?\s*(\d{9})\b'), 1),
+        (_p(r'БИК[^\S\n]*[:=]?[^\S\n]*(\d{9})\b'), 1),
     ]),
     ('СНИЛС', [
-        (_p(r'\b(\d{3}-\d{3}-\d{3}\s+\d{2})\b'), 1),
-        (_p(r'СНИЛС\s*[:=]?\s*(\d{11})\b'), 1),
+        (_p(r'\b(\d{3}-\d{3}-\d{3}[^\S\n]+\d{2})\b'), 1),
+        (_p(r'СНИЛС[^\S\n]*[:=]?[^\S\n]*(\d{11})\b'), 1),
     ]),
     ('ПАСПОРТ', [
-        (_p(r'паспорт\w*[\s:;]+(?:сери[яи]\s+)?(\d{2}\s*\d{2})\s*,?\s*(?:' + _NUM + r')?(\d{6})\b'), 0),
-        (_p(r'сери[яи]\s+(\d{2}\s+\d{2})[,;\s]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
-        (_p(r'сери[яи]\s+(\d{2,4})\s+(?:' + _NUM + r')(\d{6,9})\b'), 0),
+        (_p(r'паспорт\w*[ \t\u00a0:;]+(?:сери[яи][^\S\n]+)?(\d{2}[^\S\n]*\d{2})[^\S\n]*,?[^\S\n]*(?:' + _NUM + r')?(\d{6})\b'), 0),
+        (_p(r'сери[яи][^\S\n]+(\d{2}[^\S\n]+\d{2})[,; \t\u00a0]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
+        (_p(r'сери[яи][^\S\n]+(\d{2,4})[^\S\n]+(?:' + _NUM + r')(\d{6,9})\b'), 0),
     ]),
     ('ТЕЛЕФОН', [
-        (_p(r'(?:тел[ефон.:\s]*\.?|моб\.?\s*[:\s]|факс\s*[:\s])\s*'
-           r'(\+?[78]?[\s\-\(]?\d{3}[\s\-\)\.]\s*\d{3}[\s\-\.]\d{2}[\s\-\.]\d{2})\b'), 1),
-        (_p(r'(?<!\d)(\+7[\s\-\(]?\d{3}[\s\-\)\.]\s*\d{3}[\s\-\.]\d{2}[\s\-\.]\d{2})\b'), 1),
-        (_p(r'(?<!\d)(8[\s\-\(]\d{3}[\s\-\)\.]\s*\d{3}[\s\-\.]\d{2}[\s\-\.]\d{2})\b'), 1),
+        (_p(r'(?:тел[ефон.: \t\u00a0]*\.?|моб\.?[^\S\n]*[: \t\u00a0]|факс[^\S\n]*[: \t\u00a0])[^\S\n]*'
+           r'(\+?[78]?[ \t\u00a0\-\(]?\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
+        (_p(r'(?<!\d)(\+7[ \t\u00a0\-\(]?\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
+        (_p(r'(?<!\d)(8[ \t\u00a0\-\(]\d{3}[ \t\u00a0\-\)\.][^\S\n]*\d{3}[ \t\u00a0\-\.]\d{2}[ \t\u00a0\-\.]\d{2})\b'), 1),
         (_p(r'(?<!\d)([78][3-9]\d{9})(?!\d)'), 1),
         (_p(r'(?<!\d)(9[0-9]\d{8})(?!\d)'), 1),
     ]),
@@ -381,76 +389,76 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
         (_p(r'\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b'), 1),
     ]),
     ('АДРЕС', [
-        (_p(_ADR_KW + r'(\d{6}[,\s]+[\wА-ЯЁа-яё\s\.,\-/№«»"]{10,350})'), 1),
+        (_p(_ADR_KW + r'(\d{6}[, \t\u00a0]+[\wА-ЯЁа-яё \t\u00a0\.,\-/№«»"]{10,350})'), 1),
         (_p(_ADR_KW +
-            r'((?:(?:Р(?:оссийская\s+)?Федерация|РФ)[,\s]+)?'
-            r'г(?:ород)?\.?\s+[\w\-]{2,30}[,\s]+'
-            r'[\wА-ЯЁа-яё\s\.,\-/№]{5,350})'), 1),
+            r'((?:(?:Р(?:оссийская[^\S\n]+)?Федерация|РФ)[, \t\u00a0]+)?'
+            r'г(?:ород)?\.?[^\S\n]+[\w\-]{2,30}[, \t\u00a0]+'
+            r'[\wА-ЯЁа-яё \t\u00a0\.,\-/№]{5,350})'), 1),
         (_p(_ADR_KW +
             r'((?:ул(?:ица)?|пр(?:оспект)?|пер(?:еулок)?|бул(?:ьвар)?'
-            r'|наб(?:ережная)?|ш(?:оссе)?|пл(?:ощадь)?)\.?\s+'
-            r'[\wА-ЯЁа-яё\s\.\-]{2,50}[,\s]+д(?:ом)?\.?\s*[\w/]+'
-            r'[\wА-ЯЁа-яё\s\.,\-/№]{0,100})'), 1),
+            r'|наб(?:ережная)?|ш(?:оссе)?|пл(?:ощадь)?)\.?[^\S\n]+'
+            r'[\wА-ЯЁа-яё \t\u00a0\.\-]{2,50}[, \t\u00a0]+д(?:ом)?\.?[^\S\n]*[\w/]+'
+            r'[\wА-ЯЁа-яё \t\u00a0\.,\-/№]{0,100})'), 1),
         (_p(
-            r'(?<!\d)(\d{6}[,\s]{1,5}'
-            r'(?:[А-ЯЁа-яёA-Za-z\-]{2,30}[.,]?\s+)?'
-            r'(?:[Гг]\.?\s*|[Гг][Оо][Рр]\.?\s+)'
+            r'(?<!\d)(\d{6}[, \t\u00a0]{1,5}'
+            r'(?:[А-ЯЁа-яёA-Za-z\-]{2,30}[.,]?[^\S\n]+)?'
+            r'(?:[Гг]\.?[^\S\n]*|[Гг][Оо][Рр]\.?[^\S\n]+)'
             r'[А-ЯЁа-яё][А-ЯЁа-яё\-]{1,29}'
-            r'[,\s][\wА-ЯЁа-яёA-Za-z\s,\.\-/№«»"]{15,350}?)'
-            r'(?=\s*[\n\r]|\s*$)'
+            r'[, \t\u00a0][\wА-ЯЁа-яёA-Za-z \t\u00a0,\.\-/№«»"]{15,350}?)'
+            r'(?=[^\S\n]*[\n\r]|[^\S\n]*$)'
         ), 1),
         (_p(_ADR_KW +
             r'([А-ЯЁа-яё][А-ЯЁа-яё\w ]{1,30}'
             r'(?:область|край|республика|округ)[а-яё]*'
-            r'[,\s]+'
+            r'[, \t\u00a0]+'
             r'[^\n]{10,300})'), 1),
     ]),
     ('SWIFT', [
-        (_p(r'SWIFT\s*[-:]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
+        (_p(r'SWIFT[^\S\n]*[-:]?[^\S\n]*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b'), 1),
     ]),
     ('ФИО', [
-        (_p(
+        (_cs(
             r'(?<![А-ЯЁа-яё])'
             r'([А-ЯЁ][а-яё]{1,20}'
-            r'\s+[А-ЯЁ][а-яё]{1,15}'
-            r'\s+[А-ЯЁ][а-яё]*'
-            r'(?:ович|евич|овн|евн|ичн|инич)[а-яё]*)'
+            r'[^\S\n]+[А-ЯЁ][а-яё]{1,15}'
+            r'[^\S\n]+[А-ЯЁ][а-яё]*'
+            r'(?:(?:[оеё]вич|ьич|инич|ич)(?:а|у|ем|е)?|(?:[оеё]вн|[иы]чн|иничн)(?:а|ы|е|у|ой|ою))(?![а-яё]))'
             r'(?![А-ЯЁа-яё])'
         ), 1),
-        (_p(
+        (_cs(
             r'(?<![А-ЯЁа-яё])'
-            r'([А-ЯЁ][а-яё]{2,20}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)'
+            r'([А-ЯЁ][а-яё]{2,20}[^\S\n]+[А-ЯЁ]\.[^\S\n]*[А-ЯЁ]\.)'
             r'(?![А-ЯЁа-яё])'
         ), 1),
-        (_p(
-            r'/\s*'
+        (_cs(
+            r'/[^\S\n]*'
             r'([А-ЯЁ][а-яё]{1,20}'
-            r'(?:\s+[А-ЯЁ][а-яё]{1,15}'
-            r'(?:\s+[А-ЯЁ][а-яё]*'
-            r'(?:ович|евич|овн|евн|ичн|инич)[а-яё]*)?)?'
-            r'(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)?)'
-            r'\s*/'
+            r'(?:[^\S\n]+[А-ЯЁ][а-яё]{1,15}'
+            r'(?:[^\S\n]+[А-ЯЁ][а-яё]*'
+            r'(?:(?:[оеё]вич|ьич|инич|ич)(?:а|у|ем|е)?|(?:[оеё]вн|[иы]чн|иничн)(?:а|ы|е|у|ой|ою))(?![а-яё]))?)?'
+            r'(?:[^\S\n]+[А-ЯЁ]\.[^\S\n]*[А-ЯЁ]\.)?)'
+            r'[^\S\n]*/'
         ), 1),
         (re.compile(
             r'(?<![А-ЯЁа-яёA-Za-z.])'
-            r'([А-ЯЁ]\.\s*[А-ЯЁ]\.\s+[А-ЯЁ][а-яё]{2,25})'
+            r'([А-ЯЁ]\.[^\S\n]*[А-ЯЁ]\.[^\S\n]+[А-ЯЁ][а-яё]{2,25})'
             r'(?![А-ЯЁа-яё])',
             re.UNICODE
         ), 1),
     ]),
     ('ДАТАРОЖД', [
-        (_p(r'\b(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\s+(?:года?\s+рожд\w+|рожд\w+)'), 1),
-        (_p(r'(?:рожд[ёе]н\w*\s+)(\d{1,2}\s+' + _MONTHS_RU + r'\s+\d{4})\b'), 1),
-        (_p(r'дата\s+рождени\w+\s*[:\s]\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b'), 1),
+        (_p(r'\b(\d{1,2}[^\S\n]+' + _MONTHS_RU + r'[^\S\n]+\d{4})[^\S\n]+(?:года?[^\S\n]+рожд\w+|рожд\w+)'), 1),
+        (_p(r'(?:рожд[ёе]н\w*[^\S\n]+)(\d{1,2}[^\S\n]+' + _MONTHS_RU + r'[^\S\n]+\d{4})\b'), 1),
+        (_p(r'дата[^\S\n]+рождени\w+[^\S\n]*[: \t\u00a0][^\S\n]*(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b'), 1),
     ]),
     ('ЛИЦЕНЗИЯ', [
-        (_p(r'лицензи[яию]\w*\s+(?:цб\s+рф|банка\s+росси\w+|центральн\w+\s+банк\w+)'
-            r'\s*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
-        (_p(r'цб\s+рф\s+лицензи[яию]\w*\s*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
+        (_p(r'лицензи[яию]\w*[^\S\n]+(?:цб[^\S\n]+рф|банка[^\S\n]+росси\w+|центральн\w+[^\S\n]+банк\w+)'
+            r'[^\S\n]*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
+        (_p(r'цб[^\S\n]+рф[^\S\n]+лицензи[яию]\w*[^\S\n]*(?:' + _NUM + r')?(\d{3,6})\b'), 1),
     ]),
     ('URL', [
         (_p(r'((?:https?://|www\.)[A-Za-zА-ЯЁа-яё0-9\-\.]+\.[A-Za-z]{2,10}'
-            r'(?:/[^\s,;)»"\'<>\n]{0,200})?)'), 1),
+            r'(?:/[^ \t\u00a0,;)»"\'<>\n]{0,200})?)'), 1),
     ]),
 ]
 
@@ -524,7 +532,7 @@ def _validate_fio_regex(text: str) -> bool:
 
 _HAS_INITIALS_RE = re.compile(r'[А-ЯЁ]\.\s*[А-ЯЁ]\.', re.UNICODE)
 _HAS_PATRONYMIC_RE = re.compile(
-    r'\b[А-ЯЁ][а-яё]+(?:ович|евич|овн|евн|ичн|инич)[а-яё]*\b',
+    r'\b[А-ЯЁ][а-яё]+(?:(?:[оеё]вич|ьич|инич|ич)(?:а|у|ем|е)?|(?:[оеё]вн|[иы]чн|иничн)(?:а|ы|е|у|ой|ою))\b',
     re.UNICODE,
 )
 
@@ -605,12 +613,17 @@ def _validate_spacy_org(text: str) -> bool:
 
     # All-caps ASCII or Cyrillic acronym (АСВ, МИР, VISA) — 2-10 chars
     if 2 <= len(t) <= 10 and re.fullmatch(r'[A-ZА-ЯЁ0-9]+', t):
-        return True
+        # a heading word in capitals («ФИНАНСОВОЙ») is not an acronym
+        from core.detectors import _unknown
+        return len(t) <= 4 or _unknown(t.capitalize())
 
-    # Mixed case brand-style single token (MasterCard, Yandex, etc.)
+    # Brand-style single token (MasterCard, Yandex, Сбербанк) — but not an ordinary
+    # dictionary word that merely starts a sentence («Отчет», «Персонал»)
     if ' ' not in t and 3 <= len(t) <= 25 and re.fullmatch(r'[A-Za-zА-ЯЁа-яё0-9+\-]+', t):
         if t[:1].isupper():
-            return True
+            from core.detectors import _unknown, _tags
+            brand = (_unknown(t) or 'Orgn' in _tags(t) or re.search(r'[A-Z].*[a-z].*[A-Z]|[0-9+\-]|[A-Za-z]', t))
+            return bool(brand)
 
     words = t.split()
     if len(words) > 8:
@@ -669,6 +682,19 @@ def _get_morph():
     return _morph
 
 
+@lru_cache(maxsize=20000)
+def morph_normal(word: str) -> str:
+    """Lower-cased dictionary form of a word («Пастухова» → «пастухов»)."""
+    m = _get_morph()
+    w = word.lower().replace('ё', 'е')
+    if m is None:
+        return w
+    try:
+        return m.parse(w)[0].normal_form.replace('ё', 'е')
+    except Exception:
+        return w
+
+
 def _normalize_fio(text: str) -> str:
     """Normalize an FIO string to nominative case word-by-word (pymorphy3).
     Returns original text on any failure. Pure best-effort."""
@@ -691,6 +717,12 @@ def _normalize_fio(text: str) -> str:
         return ' '.join(out)
     except Exception:
         return text
+
+
+_PUBLIC_LEGAL_URL = re.compile(
+    r'(?:consultant\.ru|garant\.ru|kontur(?:-extern)?\.ru|pravo\.gov\.ru|publication\.pravo|'
+    r'kad\.arbitr\.ru|sudact\.ru|vsrf\.ru|ksrf\.ru|cbr\.ru|nalog\.(?:gov\.)?ru|minfin|'
+    r'government\.ru|kremlin\.ru|duma\.gov|docs\.cntd\.ru|base\.garant)', re.IGNORECASE)
 
 
 def _apply_regex_pass(text: str, db_path, session_id: str,
@@ -716,6 +748,8 @@ def _apply_regex_pass(text: str, db_path, session_id: str,
                 return
         if etype == 'АДРЕС' and len(value) < 5:
             return
+        if etype == 'URL' and _PUBLIC_LEGAL_URL.search(value):
+            return   # links to public legal databases are not PII
         if _contains_token(value) or _contains_token(text[max(0, s - 1):e + 1]):
             return
         if exclusions and (value, etype) in exclusions:
@@ -807,6 +841,9 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
         if not original or len(original) < 3:
             rejected['short'] += 1
             continue
+        if '\n' in original or '\t' in original:
+            rejected['short'] += 1   # spaCy glued words from different lines / cells
+            continue
         if _is_bracketed_token(original) or _contains_token(original):
             rejected['mask'] += 1
             continue
@@ -816,7 +853,7 @@ def _apply_spacy_pass(text: str, db_path, session_id: str,
         if etype == 'ЮЛ':
             # Keep the legal form in the text: «ООО Вектор» → mask only «Вектор»
             original = _OPF_LEAD_RE.sub('', original).strip(' «»"\'“”„')
-            if not original or _OPF_ONLY_RE.fullmatch(original):
+            if not original or _OPF_ONLY_RE.fullmatch(original) or not original[:1].isupper() and not original[:1].isdigit():
                 rejected['org_filter'] += 1
                 continue
             if _is_payment_bank(text, ent.start_char):
@@ -922,6 +959,47 @@ def _apply_global_known(text: str, db_path, session_id: str,
     return text, replacements
 
 
+_CAP_WORD_RE = re.compile(r'(?<![\w\[])[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?(?![\w\]])|(?<![\w\[])[А-ЯЁ]{3,}(?![\w\]])')
+
+
+def _propagate_surnames(text: str, db_path, session_id: str, exclusions: set = None):
+    """«Белозёров обязуется…» after «Белозёров Аркадий Львович» → the same token.
+
+    A capitalized word whose surname key equals the surname of exactly one masked
+    person is masked too. Words that are first names or common dictionary words
+    without a surname reading are skipped («Морозов» yes, «Мороз» no)."""
+    from core.entities import Person, surname_key
+    from core.detectors import _tags, _SURN_END
+    persons = {}
+    for m in get_session_mappings(db_path, session_id):
+        if m['entity_type'] == 'ФИО':
+            sk = Person.parse(m['original_form']).surname
+            if sk and len(sk) >= 3:
+                persons.setdefault(sk, set()).add(m['token'])
+    if not persons:
+        return text, {}
+    reps, spans = {}, []
+    for mt in _CAP_WORD_RE.finditer(text):
+        w = mt.group()
+        cap = w.capitalize() if w.isupper() else w
+        tags = _tags(cap)
+        if 'Name' in tags or 'Patr' in tags:
+            continue
+        if 'Surn' not in tags and not _SURN_END.search(cap.lower()):
+            continue
+        toks = persons.get(surname_key(cap))
+        if not toks or len(toks) != 1:
+            continue
+        if exclusions and (w, 'ФИО') in exclusions:
+            continue
+        tok = _wrap(get_or_create_token(db_path, session_id, w, w, 'ФИО'))
+        reps[w] = tok
+        spans.append((mt.start(), mt.end(), tok))
+    if spans:
+        print(f'[PROPAGATE] {len(spans)} surname mention(s)')
+    return apply_spans(text, spans), reps
+
+
 def anonymize_text_pipeline(
     text: str,
     db_path,
@@ -968,6 +1046,10 @@ def anonymize_text_pipeline(
         except Exception as ex:
             print(f'[LLM] Pass failed: {ex}')
 
+    # Propagation: surnames of found persons in any case form, anywhere in the text
+    text, reps_prop = _propagate_surnames(text, db_path, session_id, exclusions)
+    all_reps.update(reps_prop)
+
     # Final pass: apply known DB entries
     text, reps_known = _apply_known_entities(text, db_path, session_id)
     all_reps.update(reps_known)
@@ -975,14 +1057,110 @@ def anonymize_text_pipeline(
     return text, all_reps
 
 
+# Russian spellings an external LLM may use for token prefixes
+_RU_PREFIX = {'ФИО': 'FIO', 'ЮЛ': 'YUL', 'ИНН': 'INN', 'ОГРН': 'OGRN', 'КПП': 'KPP',
+              'ТЕЛ': 'TEL', 'АДР': 'ADR', 'АДРЕС': 'ADR', 'ПАСПОРТ': 'PASSPORT', 'БИК': 'BIK',
+              'СНИЛС': 'SNILS', 'РС': 'RS', 'КС': 'KS'}
+_PFX_ALL = sorted(set(_TOKEN_PREFIXES) | set(_RU_PREFIX), key=len, reverse=True)
+_PFX_ALT_ALL = '|'.join(map(re.escape, _PFX_ALL))
+# [FIO_1]  [FIO 1]  [FIO-1]  [fio_1]  [ФИО_1]  and bare FIO_1 (not inside FIO_10)
+TOKEN_LOOSE_RE = re.compile(
+    rf'\[\s*({_PFX_ALT_ALL})[\s_\-]*(\d+)\s*\]'
+    rf'|(?<![A-Za-zА-Яа-яЁё0-9_])({_PFX_ALT_ALL})[_\-](\d+)(?![\d])',
+    re.IGNORECASE | re.UNICODE)
+
+
+def _token_key(m) -> str:
+    pfx, n = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+    up = pfx.upper()
+    return f'{_RU_PREFIX.get(up, up)}_{int(n)}'
+
+
+def reverse_spans(text: str, reverse_map: dict) -> List[Tuple[int, int, str]]:
+    """Spans of tokens in text with the value to restore."""
+    out = []
+    for m in TOKEN_LOOSE_RE.finditer(text):
+        val = reverse_map.get(_token_key(m))
+        if val is not None:
+            out.append((m.start(), m.end(), val))
+    return out
+
+
+def replace_spans(text: str, replacements: Dict[str, str]) -> List[Tuple[int, int, str]]:
+    """Spans of replacement keys in text (word boundaries, longest first)."""
+    reps = {k: v for k, v in replacements.items() if k}
+    if not text or not reps:
+        return []
+    return [(m.start(), m.end(), reps[m.group(0)])
+            for m in _bounded_pattern(tuple(reps)).finditer(text)]
+
+
+def apply_spans(text: str, spans) -> str:
+    out, last = [], 0
+    for a, b, v in sorted(spans):
+        if a < last:
+            continue
+        out.append(text[last:a])
+        out.append(v)
+        last = b
+    out.append(text[last:])
+    return ''.join(out)
+
+
+def make_finder(replacements: Dict[str, str], log: list = None):
+    """find(text) → [(start, end, token)]; with log, records (token, original) in order."""
+    def find(text):
+        spans = replace_spans(text, replacements)
+        if log is not None:
+            log.extend((v.strip('[]'), text[a:b]) for a, b, v in sorted(spans))
+        return spans
+    return find
+
+
+def make_rev_finder(db_path, session_id: str, occurrences: dict = None):
+    """find(text) → [(start, end, original)]. The k-th occurrence of a token gets the
+    k-th recorded form of the original file (exact case); otherwise the main form."""
+    from core.db import get_reverse_info
+    info = get_reverse_info(db_path, session_id)
+    occ = occurrences or {}
+    seen: Dict[str, int] = {}
+
+    def find(text):
+        out = []
+        for m in TOKEN_LOOSE_RE.finditer(text):
+            key = _token_key(m)
+            if key not in info:
+                continue
+            value, edited = info[key]
+            k = seen.get(key, 0)
+            seen[key] = k + 1
+            forms = occ.get(key)
+            if forms and not edited and k < len(forms):
+                value = forms[k]
+            out.append((m.start(), m.end(), value))
+        return out
+    return find
+
+
+def anonymize_text(text: str, db_path, session_id: str, use_spacy: bool = True,
+                   use_llm: bool = False):
+    """Plain-text anonymization. Returns (masked_text, occurrences {token: [forms]})."""
+    _, reps = anonymize_text_pipeline(text, db_path, session_id, use_spacy=use_spacy, use_llm=use_llm)
+    log = []
+    out = apply_spans(text, make_finder(reps, log)(text))
+    occ: Dict[str, list] = {}
+    for tok, orig in log:
+        occ.setdefault(tok, []).append(orig)
+    return out, occ
+
+
+def restore_text(text: str, db_path, session_id: str, occurrences: dict = None) -> str:
+    return apply_spans(text, make_rev_finder(db_path, session_id, occurrences)(text))
+
+
 def apply_reverse(text: str, reverse_map: dict) -> str:
-    """Replace [TOKEN] -> original. Also handles bare TOKEN for backward compat."""
+    """Replace tokens with original values. Tolerates the ways an external LLM
+    rewrites tokens: [FIO_1], FIO_1, [FIO 1], [FIO-1], [fio_1], [ФИО_1], [FIO_1]у."""
     if not reverse_map:
         return text
-    combined = {}
-    for tok, orig in reverse_map.items():
-        combined[f'[{tok}]'] = orig
-        combined[tok]        = orig
-    for token, orig in sorted(combined.items(), key=lambda x: -len(x[0])):
-        text = text.replace(token, orig)
-    return text
+    return apply_spans(text, reverse_spans(text, reverse_map))

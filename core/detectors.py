@@ -35,15 +35,15 @@ def _ctx(regex, text, pos, n=60):
 # ── Numeric identifiers ──────────────────────────────────────────────────────
 
 _RUN_RE = re.compile(r'(?<![\d\w])\d+(?![\d])', _U)
-_INN_CTX = re.compile(r'ИНН|TIN|Tax\s*ID|налогоплательщик', _I)
-_KPP_CTX = re.compile(r'КПП|причины\s+постановки', _I)
-_SNILS_CTX = re.compile(r'СНИЛС|страхов\w*\s+номер|лицев\w*\s+сч[её]т\w*\s*$', _I)
+_INN_CTX = re.compile(r'ИНН|TIN|Tax[^\S\n]*ID|налогоплательщик', _I)
+_KPP_CTX = re.compile(r'КПП|причины[^\S\n]+постановки', _I)
+_SNILS_CTX = re.compile(r'СНИЛС|страхов\w*[^\S\n]+номер|лицев\w*[^\S\n]+сч[её]т\w*[^\S\n]*$', _I)
 _OKPO_CTX = re.compile(r'ОКПО', _I)
 _OMS_CTX = re.compile(r'ОМС|полис', _I)
 _CARD_CTX = re.compile(r'карт', _I)
-_PASSPORT_CTX = re.compile(r'паспорт|удостоверени\w+\s+личност', _I)
+_PASSPORT_CTX = re.compile(r'паспорт|удостоверени\w+[^\S\n]+личност', _I)
 _PHONE_CTX = re.compile(r'\b(?:тел|моб|факс|phone|whatsapp|звон)', _I)
-_SEP_AFTER_INN = re.compile(r'^[\s/|,;\\]{1,6}$')
+_SEP_AFTER_INN = re.compile(r'^[ \t\u00a0/|,;\\]{1,6}$')
 
 
 def _numeric(text: str) -> List[Hit]:
@@ -64,7 +64,7 @@ def _numeric(text: str) -> List[Hit]:
             hits.append(Hit(s, e, 'ОГРН'))
         elif n == 15 and V.ogrnip(d):
             hits.append(Hit(s, e, 'ОГРН'))
-        elif n == 9 and (_KPP_CTX.search(left) and not re.search(r'БИК\s*:?\s*$', left, _I)
+        elif n == 9 and (_KPP_CTX.search(left) and not re.search(r'БИК[^\S\n]*:?[^\S\n]*$', left, _I)
                          or any(_SEP_AFTER_INN.match(text[ie:s] or 'x') for ie in inn_ends)):
             hits.append(Hit(s, e, 'КПП'))
         elif n == 11 and V.snils(d) and _SNILS_CTX.search(left):
@@ -87,6 +87,30 @@ _SNILS_GROUPED = re.compile(r'(?<![\d])\d{3}[\- ]\d{3}[\- ]\d{3}[\- ]\d{2}(?![\d
 _IBAN_RE = re.compile(r'\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b')
 
 
+_SPACED = re.compile(r'(?<![\d\w])\d+(?:[ \-]\d+){1,7}(?![\d])')
+_ACC_CTX = re.compile(r'сч[её]т|р/с|к/с|р/сч|к/сч|account', _I)
+
+
+def _spaced_numbers(text: str) -> List[Hit]:
+    """Identifiers written with arbitrary spaces/hyphens: «40802 810 5 63000020160»,
+    «8-909-265-1-888». Money («1 234 567 890 рублей») is excluded by checksums/context."""
+    hits = []
+    for m in _SPACED.finditer(text):
+        d = V.digits(m.group())
+        left = _left(text, m.start(), 50)
+        if len(d) == 20 and (d[:2] in ('40', '30', '42', '03', '41') or _ACC_CTX.search(left)):
+            hits.append(Hit(m.start(), m.end(), 'КС' if d.startswith('301') else 'РС'))
+        elif len(d) == 12 and V.inn12(d):
+            hits.append(Hit(m.start(), m.end(), 'ИНН'))
+        elif len(d) == 10 and V.inn10(d) and _INN_CTX.search(left):
+            hits.append(Hit(m.start(), m.end(), 'ИНН'))
+        elif len(d) == 13 and V.ogrn(d):
+            hits.append(Hit(m.start(), m.end(), 'ОГРН'))
+        elif len(d) == 11 and d[0] in '78' and d[1] in '3489' and _PHONE_CTX.search(left):
+            hits.append(Hit(m.start(), m.end(), 'ТЕЛЕФОН'))
+    return hits
+
+
 def _grouped_numbers(text: str) -> List[Hit]:
     hits = []
     for m in _CARD_GROUPED.finditer(text):
@@ -107,7 +131,7 @@ def _grouped_numbers(text: str) -> List[Hit]:
 
 
 _SWIFT_RE = re.compile(
-    r'(?:SWIFT|BIC)(?:\s*(?:code|код|/\s*BIC))?\s*[:\-]?\s*'
+    r'(?:SWIFT|BIC)(?:[^\S\n]*(?:code|код|/[^\S\n]*BIC))?[^\S\n]*[:\-]?[^\S\n]*'
     r'([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b', re.UNICODE)
 
 
@@ -118,11 +142,11 @@ def _swift(text):
 # ── Phones ───────────────────────────────────────────────────────────────────
 
 _PHONE_RU = re.compile(
-    r'(?<![\d\w+])(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)')
+    r'(?<![\d\w+])(?:\+7|8)[ \-]?\(?\d{3}\)?[ \-]?\d{3}[ \-]?\d{2}[ \-]?\d{2}(?!\d)')
 _PHONE_INTL = re.compile(
-    r'(?<![\d\w])\+(?!7)\d{1,3}(?:[\s\-]?\(?\d{1,4}\)?){1,2}(?:[\s\-]?\d{2,4}){2,4}(?!\d)')
+    r'(?<![\d\w])\+(?!7)\d{1,3}(?:[ \t\u00a0\-]?\(?\d{1,4}\)?){1,2}(?:[ \t\u00a0\-]?\d{2,4}){2,4}(?!\d)')
 _PHONE_LOCAL = re.compile(
-    r'(?<![\d\w])(?:\(\d{3,5}\)\s*)?\d{3}[\s\-]\d{2}[\s\-]\d{2}(?!\d)')
+    r'(?<![\d\w])(?:\(\d{3,5}\)[ ]*)?\d{3}[ \-]\d{2}[ \-]\d{2}(?!\d)')
 
 
 def _phones(text: str) -> List[Hit]:
@@ -142,18 +166,18 @@ def _phones(text: str) -> List[Hit]:
 
 _NUMW = r'(?:№|N|No\.?|номер)'
 _SER_NUM = re.compile(
-    r'(?<![\d])(\d{2}\s?\d{2})(?:\s*,?\s*' + _NUMW + r'?\s*)(\d{6})(?![\d])', _I)
+    r'(?<![\d])(\d{2}[^\S\n]?\d{2})(?:[^\S\n]*,?[^\S\n]*' + _NUMW + r'?[^\S\n]*)(\d{6})(?![\d])', _I)
 _PASS_ONE = re.compile(r'(?<![\d])(\d{10})(?![\d])')
-_FOREIGN = re.compile(r'(?<![\d])(\d{2}\s?\d{7})(?![\d])')
+_FOREIGN = re.compile(r'(?<![\d])(\d{2}[^\S\n]?\d{7})(?![\d])')
 _FOREIGN_CTX = re.compile(r'загран', _I)
-_SERIES_CTX = re.compile(r'паспорт|сери[яи]|удостоверени\w+\s+личност', _I)
+_SERIES_CTX = re.compile(r'паспорт|сери[яи]|удостоверени\w+[^\S\n]+личност', _I)
 _DIV_CODE = re.compile(
-    r'(?:код\w*\s+подразделени\w*|к/п|к\.п\.)\s*[:№]?\s*(\d{3}[\-\s]?\d{3})(?![\d])', _I)
+    r'(?:код\w*[^\S\n]+подразделени\w*|к/п|к\.п\.)[^\S\n]*[:№]?[^\S\n]*(\d{3}[\- \t\u00a0]?\d{3})(?![\d])', _I)
 _ISSUED = re.compile(
-    r'выдан[аоы]?\s*:?\s*(?:\d{2}\.\d{2}\.\d{4}\s*(?:г\.?\s*)?)?'
-    r'([А-ЯЁ][^\n;]{2,150}?)(?=\s*(?:,|;|\n|$|\d{2}\.\d{2}\.\d{4}))', _U)
+    r'выдан[аоы]?[^\S\n]*:?[^\S\n]*(?:\d{2}\.\d{2}\.\d{4}[^\S\n]*(?:г\.?[^\S\n]*)?)?'
+    r'([А-ЯЁ][^\n;]{2,150}?)(?=[^\S\n]*(?:,|;|\n|$|\d{2}\.\d{2}\.\d{4}))', _U)
 _DRIVER = re.compile(
-    r'водительск\w+\s+удостоверени\w+\s*(?:серии\s*|№\s*)?(\d{2}\s?\d{2}\s?№?\s?\d{6})', _I)
+    r'водительск\w+[^\S\n]+удостоверени\w+[^\S\n]*(?:серии[^\S\n]*|№[^\S\n]*)?(\d{2}[^\S\n]?\d{2}[^\S\n]?№?[^\S\n]?\d{6})', _I)
 
 
 def _passport(text: str) -> List[Hit]:
@@ -186,15 +210,15 @@ def _passport(text: str) -> List[Hit]:
 # ── Birth dates and places ───────────────────────────────────────────────────
 
 _MONTHS = (r'(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)[а-я]*')
-_DATE = r'(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{1,2}\s+' + _MONTHS + r'\s+\d{4})'
+_DATE = r'(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{1,2}[^\S\n]+' + _MONTHS + r'[^\S\n]+\d{4})'
 _DOB_PATTERNS = [
-    re.compile(r'(' + _DATE + r')\s*(?:г\.?\s*)?(?:г\.\s*р\.|года?\s+рожд\w*|г\.р\.?)', _I),
-    re.compile(r'(?<![\d.])(\d{4})\s*г\.\s*р\.?', _I),
-    re.compile(r'(?:родил(?:ся|ась)|рожд[её]н\w*)\s+(' + _DATE + r')', _I),
-    re.compile(r'дата\s+(?:и\s+место\s+)?рождени\w*\s*[:\-]?\s*(' + _DATE + r')', _I),
+    re.compile(r'(' + _DATE + r')[^\S\n]*(?:г\.?[^\S\n]*)?(?:г\.[^\S\n]*р\.|года?[^\S\n]+рожд\w*|г\.р\.?)', _I),
+    re.compile(r'(?<![\d.])(\d{4})[^\S\n]*г\.[^\S\n]*р\.?', _I),
+    re.compile(r'(?:родил(?:ся|ась)|рожд[её]н\w*)[^\S\n]+(' + _DATE + r')', _I),
+    re.compile(r'дата[^\S\n]+(?:и[^\S\n]+место[^\S\n]+)?рождени\w*[^\S\n]*[:\-]?[^\S\n]*(' + _DATE + r')', _I),
 ]
-_PLACE = r'(?:г\.|гор\.|город|пос\.|пгт\.?|с\.|село|дер\.|деревня|ст-ца|станица)\s*[А-ЯЁ][\w\-]+(?:\s+[А-ЯЁ][\w\-]+)?'
-_BIRTHPLACE = re.compile(r'место\s+рождени\w*\s*[:\-]?\s*(?:' + _DATE + r'\s*,\s*)?(' + _PLACE + r')', _I)
+_PLACE = r'(?:г\.|гор\.|город|пос\.|пгт\.?|с\.|село|дер\.|деревня|ст-ца|станица)[^\S\n]*[А-ЯЁ][\w\-]+(?:[^\S\n]+[А-ЯЁ][\w\-]+)?'
+_BIRTHPLACE = re.compile(r'место[^\S\n]+рождени\w*[^\S\n]*[:\-]?[^\S\n]*(?:' + _DATE + r'[^\S\n]*,[^\S\n]*)?(' + _PLACE + r')', _I)
 
 
 def _birth(text: str) -> List[Hit]:
@@ -209,32 +233,32 @@ def _birth(text: str) -> List[Hit]:
 
 # ── Addresses: chain of address components ───────────────────────────────────
 
-_NM = r'(?:\d{1,2}-?[яйе]\s+)?[А-ЯЁ][А-ЯЁа-яё\-]+(?:\s+[А-ЯЁ][А-ЯЁа-яё\-]+){0,2}'
+_NM = r'(?:\d{1,2}-?[яйе][^\S\n]+)?[А-ЯЁ][А-ЯЁа-яё\-]+(?:[^\S\n]+[А-ЯЁ][А-ЯЁа-яё\-]+){0,2}'
 _STREET_MK = (r'(?i:ул\.|улица|пр-т|пр-кт|просп\.|проспект|пер\.|пер\b|переулок|наб\.|набережная|'
               r'ш\.|шоссе|б-р|бул\.|бульвар|пл\.|площадь|проезд|пр-д|туп\.|тупик|аллея|линия|мкр\.|'
               r'микрорайон|кв-л|квартал)')
-_HOUSE = r'(?i:д\.|дом|вл\.|владение|зд\.|здание)\s*№?\s*\d+[А-Яа-яA-Za-z]?(?:[/\-]\d+[А-Яа-я]?)?'
+_HOUSE = r'(?i:д\.|дом|вл\.|владение|зд\.|здание)[^\S\n]*№?[^\S\n]*\d+[А-Яа-яA-Za-z]?(?:[/\-]\d+[А-Яа-я]?)?'
 _EXTRA = (r'(?i:кв\.|квартира|оф\.|офис|пом\.|помещ\.|помещение|стр\.|строение|корп\.|корпус|к\.|'
-          r'лит\.|литера|литер|блок|эт\.|этаж|комн\.|комната|ком\.)\s*№?\s*[\wА-Яа-я][\wА-Яа-я/\-]*')
+          r'лит\.|литера|литер|блок|эт\.|этаж|комн\.|комната|ком\.)[^\S\n]*№?[^\S\n]*[\wА-Яа-я][\wА-Яа-я/\-]*')
 _COMP = {
     'index': r'\d{6}',
-    'country': r'(?:Российская\s+Федерация|РФ|Россия)',
-    'region': (r'(?:' + _NM + r'\s+(?i:обл\.|область|край|автономный\s+округ|АО)|'
-               r'(?i:Республика|респ\.)\s+' + _NM + r')'),
-    'district': r'(?:' + _NM + r'\s+(?i:р-н|район)|(?i:р-н|район)\s+' + _NM + r')',
+    'country': r'(?:Российская[^\S\n]+Федерация|РФ|Россия)',
+    'region': (r'(?:' + _NM + r'[^\S\n]+(?i:обл\.|область|край|автономный[^\S\n]+округ|АО)|'
+               r'(?i:Республика|респ\.)[^\S\n]+' + _NM + r')'),
+    'district': r'(?:' + _NM + r'[^\S\n]+(?i:р-н|район)|(?i:р-н|район)[^\S\n]+' + _NM + r')',
     'city': (r'(?:(?i:г\.|гор\.|город|пос\.|пгт\.?|с\.|село|дер\.|деревня|ст-ца|рп\.?|'
-             r'вн\.тер\.г\.)\s*' + _NM + r')'),
-    'street': r'(?:' + _STREET_MK + r'\s*' + _NM + r'|' + _NM + r'\s+' + _STREET_MK + r')',
+             r'вн\.тер\.г\.)[^\S\n]*' + _NM + r')'),
+    'street': r'(?:' + _STREET_MK + r'[^\S\n]*' + _NM + r'|' + _NM + r'[^\S\n]+' + _STREET_MK + r')',
     'house': _HOUSE,
     'extra': _EXTRA,
-    'pobox': r'(?i:а/я|абонентский\s+ящик)\s*№?\s*\d+',
+    'pobox': r'(?i:а/я|абонентский[^\S\n]+ящик)[^\S\n]*№?[^\S\n]*\d+',
     'num': r'\d{1,4}[А-Яа-я]?(?:/\d{1,4})?(?![\d.:])',
 }
 _COMP_RE = {k: re.compile(v, re.UNICODE) for k, v in _COMP.items()}
 _ORDER = ['pobox', 'index', 'country', 'region', 'district', 'city', 'street', 'house', 'extra']
-_ADDR_CTX = re.compile(r'адрес|местонахождени|место\s+нахождени|место\s+жительств|проживающ|'
+_ADDR_CTX = re.compile(r'адрес|местонахождени|место[^\S\n]+нахождени|место[^\S\n]+жительств|проживающ|'
                        r'зарегистрирован|регистраци', _I)
-_JOIN = re.compile(r'\s*,?\s*', _U)
+_JOIN = re.compile(r'[^\S\n]*,?[^\S\n]*', _U)
 
 
 def _match_comp(text, pos, prev):
@@ -306,13 +330,14 @@ def _cadastral(text):
 
 # ── Other identifiers ────────────────────────────────────────────────────────
 
-_PLATE = re.compile(r'(?<![\wА-Яа-я])[АВЕКМНОРСТУХABEKMHOPCTYX]\s?\d{3}\s?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\s?\d{2,3}(?![\w])')
+_PLATE = re.compile(r'(?<![\wА-Яа-я])[АВЕКМНОРСТУХABEKMHOPCTYX][^\S\n]?\d{3}[^\S\n]?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}[ ]?\d{2,3}(?![\w])',
+                    re.IGNORECASE)
 _VIN = re.compile(r'(?<![A-Z0-9])(?=[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9]))(?=[A-HJ-NPR-Z0-9]*\d)(?=[A-HJ-NPR-Z0-9]*[A-Z])[A-HJ-NPR-Z0-9]{17}')
 _NOTARY = re.compile(r'(?<![\d/])\d{2,3}/\d{1,4}-н/\d{2,3}-\d{4}-\d{1,3}-\d{1,6}(?![\d])')
 _NICK = re.compile(r'(?<![\w@.])@[A-Za-z][A-Za-z0-9_]{3,31}\b')
 _EMAIL_OBF = re.compile(
-    r'[A-Za-z0-9._%+\-]+\s*[\[\(\{]\s*(?:at|собака)\s*[\]\)\}]\s*[A-Za-z0-9\-]+'
-    r'(?:\s*[\[\(\{]\s*(?:dot|точка)\s*[\]\)\}]\s*|\.)[A-Za-z]{2,}', re.I)
+    r'[A-Za-z0-9._%+\-]+[^\S\n]*[\[\(\{][^\S\n]*(?:at|собака)[^\S\n]*[\]\)\}][^\S\n]*[A-Za-z0-9\-]+'
+    r'(?:[^\S\n]*[\[\(\{][^\S\n]*(?:dot|точка)[^\S\n]*[\]\)\}][^\S\n]*|\.)[A-Za-z]{2,}', re.I)
 
 
 def _other(text):
@@ -327,16 +352,16 @@ def _other(text):
 # ── Legal entities without quotes / foreign ──────────────────────────────────
 
 _OPF_BARE = re.compile(
-    r'(?<![\wА-Яа-я])(?:ООО|ПАО|АО|ЗАО|ОАО|НАО|ГК)\s+'
-    r'([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+)?)', _U)
+    r'(?<![\wА-Яа-я])(?:ООО|ПАО|АО|ЗАО|ОАО|НАО|ГК)[^\S\n]+'
+    r'([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:[^\S\n]+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+)?)', _U)
 _OPF_TAIL = re.compile(
-    r'(?<![\wА-Яа-я«"])((?:[Бб]анк\s+)?[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+){0,2})'
-    r'\s*\((?:ПАО|АО|ООО|ЗАО|ОАО|НАО)\)', _U)
+    r'(?<![\wА-Яа-я«"])((?:[Бб]анк[^\S\n]+)?[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+(?:[^\S\n]+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9\-]+){0,2})'
+    r'[^\S\n]*\((?:ПАО|АО|ООО|ЗАО|ОАО|НАО)\)', _U)
 _FOREIGN_ORG = re.compile(
-    r'((?:[A-Z][A-Za-z0-9&\'\-]*\.?\s+){0,4}[A-Z][A-Za-z0-9&\'\-]*)\s*,?\s+'
-    r'(?:LLC|L\.L\.C\.|Ltd\.?|Limited|Inc\.?|Corp\.?|Corporation|GmbH|AG|S\.A\.|SA|B\.V\.|BV|N\.V\.|PLC|LLP|LP|SARL|S\.?r\.?l\.?|Pte\.?)(?![A-Za-z])')
+    r'((?:[A-Z][A-Za-z0-9&\'\-]*\.?[^\S\n]+){0,4}[A-Z][A-Za-z0-9&\'\-]*)[^\S\n]*,?[^\S\n]+'
+    r'(?:LLC|L\.L\.C\.|(?i:Ltd)\.?|(?i:Limited)|Inc\.?|Corp\.?|Corporation|GmbH|AG|S\.A\.|SA|B\.V\.|BV|N\.V\.|PLC|LLP|LP|SARL|S\.?r\.?l\.?|Pte\.?)(?![A-Za-z])')
 _GENERIC_ORG_QUOTED = re.compile(
-    r'(?<![\wА-Яа-я])(?:[Оо]бществ\w*|[Кк]омпани\w*|[Фф]ирм\w*|[Пп]редприяти\w*)\s+'
+    r'(?<![\wА-Яа-я])(?:[Оо]бществ\w*|[Кк]омпани\w*|[Фф]ирм\w*|[Пп]редприяти\w*)[^\S\n]+'
     r'[«"“„]([А-ЯЁA-Z0-9][^«»"“”„\n]{1,80})[»"”“]', _U)
 # Generic words that are never a company name on their own (roles, headings)
 _NOT_ORG_NAME = {
@@ -345,6 +370,7 @@ _NOT_ORG_NAME = {
     'общество', 'компания', 'банк', 'сторона', 'стороны', 'агент', 'принципал',
     'поставщик', 'гарант', 'бенефициар', 'цедент', 'цессионарий', 'залогодатель',
     'залогодержатель', 'лицензиар', 'лицензиат', 'участник', 'эмитент',
+    'рф', 'россия', 'российская федерация', 'москва', 'санкт-петербург',
 }
 
 
@@ -354,7 +380,7 @@ _PAYMENT_CTX = re.compile(r'р/сч?|к/сч?|сч[её]т\w*|БИК|\d{20}', _I
 def _is_payment_bank(text, start):
     """«р/с ... в ПАО Сбербанк» — the paying bank is public info, not PII (catalog §4, §12.4)."""
     left = _left(text, start, 60)
-    return bool(re.search(r'\bв\s+(?:\S+\s+)?$', left)) and bool(_PAYMENT_CTX.search(left))
+    return bool(re.search(r'\bв[^\S\n]+(?:\S+[^\S\n]+)?$', left)) and bool(_PAYMENT_CTX.search(left))
 
 
 def _orgs(text: str) -> List[Hit]:
@@ -431,58 +457,95 @@ def _to_cyr(word: str) -> str:
 
 _CAP = r'[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?'
 _WORD_CAP = re.compile(r'(?<![\wА-Яа-яЁё.])' + _CAP + r'(?![\wА-Яа-яЁё])', _U)
-_INIT1 = re.compile(r'\s*([А-ЯЁ]\.(?:\s*[А-ЯЁ]\.)?)', _U)
+_INIT1 = re.compile(r'[^\S\n]*([А-ЯЁ]\.(?:[^\S\n]*[А-ЯЁ]\.)?)', _U)
 _ROLE_CTX = re.compile(
     r'(?:директор\w*|заявител\w*|ответчик\w*|истц\w*|ист[её]ц|представител\w*|'
     r'председател\w*|секретар\w*|гражданин\w*|гражданк\w*|руководител\w*|'
     r'бухгалтер\w*|нотариус\w*|участник\w*|учредител\w*|акционер\w*|'
     r'заемщик\w*|заёмщик\w*|поручител\w*|наследник\w*|свидетел\w*|'
-    r'потерпевш\w*|подсудим\w*|обвиняем\w*|третье\s+лицо|ИП|президент\w*|'
-    r'управляющ\w*|ликвидатор\w*|арбитражн\w+\s+управляющ\w*|судья|адвокат\w*)'
-    r'[\s:,\-–—_]*$', _I)
+    r'потерпевш\w*|подсудим\w*|обвиняем\w*|третье[^\S\n]+лицо|ИП|президент\w*|'
+    r'управляющ\w*|ликвидатор\w*|арбитражн\w+[^\S\n]+управляющ\w*|судья|адвокат\w*)'
+    r'[ \t\u00a0:,\-–—_]*$', _I)
 _TURKIC = re.compile(
-    r'(?<![\wА-Яа-яЁё])((?:' + _CAP + r'\s+)?' + _CAP + r'\s+' + _CAP +
-    r'\s+(?:оглы|кызы|гызы|улы|уулу))(?![\wА-Яа-яЁё])', _U)
+    r'(?<![\wА-Яа-яЁё])((?:' + _CAP + r'[^\S\n]+)?' + _CAP + r'[^\S\n]+' + _CAP +
+    r'[^\S\n]+(?:оглы|кызы|гызы|улы|уулу))(?![\wА-Яа-яЁё])', _U)
 _LAT_PATR = re.compile(
-    r'(?<![A-Za-z])([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+(?:ovich|evich|ovna|evna|ichna|ich))(?![A-Za-z])')
-_LAT_PAIR = re.compile(r'(?<![A-Za-z])([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})(?![A-Za-z])')
+    r'(?<![A-Za-z])([A-Z][a-z]+[^\S\n]+[A-Z][a-z]+[^\S\n]+[A-Z][a-z]+(?:ovich|evich|ovna|evna|ichna|ich))(?![A-Za-z])')
+_LAT_PAIR = re.compile(r'(?<![A-Za-z])([A-Z][a-z]{2,})[^\S\n]+([A-Z][a-z]{2,})(?![A-Za-z])')
 
 
 def _is_surn(w):
-    return 'Surn' in _tags(w) and 'Geox' not in _tags(w)
+    return 'Surn' in _tags(w)
 
 
 def _is_name(w):
     return 'Name' in _tags(w)
 
 
+def _is_patr(w):
+    return 'Patr' in _tags(w)
+
+
+@lru_cache(maxsize=20000)
+def _unknown(w: str) -> bool:
+    """Capitalized word absent from the dictionary (rare surname: «Кацнельс», «Чорбу»)."""
+    m = _morph()
+    return m is not None and len(w) >= 3 and not m.word_is_known(w.lower())
+
+
+_SURN_END = re.compile(r'(?:ов|ев|ёв|ин|ын|ский|цкий|ской|ова|ева|ёва|ина|ына|ская|цкая|ко|ук|юк|ян|дзе|швили|'
+                       r'ых|их|ович|евич|ович)(?:а|у|ым|ой|ом|е|ы)?$', re.IGNORECASE)
+_WORD_ANY = re.compile(r'(?<![\wА-Яа-яЁё.])(?:' + _CAP + r'|[А-ЯЁ]{2,}(?:-[А-ЯЁ]{2,})?)(?![\wА-Яа-яЁё])', _U)
+_GAP = re.compile(r'[ \t ]+')
+
+
 def _persons(text: str) -> List[Hit]:
     hits = []
-    words = [(m.start(), m.end(), m.group()) for m in _WORD_CAP.finditer(text)]
+    words = []
+    for m in _WORD_ANY.finditer(text):
+        raw = m.group()
+        caps = raw.isupper()
+        norm = '-'.join(x.capitalize() for x in raw.split('-')) if caps else raw
+        words.append((m.start(), m.end(), norm, caps))
+
+    def adj(i, j):
+        return j < len(words) and _GAP.fullmatch(text[words[i][1]:words[j][0]] or 'x')
+
     i = 0
     while i < len(words):
-        s, e, w = words[i]
-        nxt = words[i + 1] if i + 1 < len(words) else None
-        adjacent = nxt and re.fullmatch(r'\s+', text[e:nxt[0]])
-        # Surname + Name (+ Patronymic) or Name + Surname
-        if adjacent and ((_is_surn(w) and _is_name(nxt[2])) or (_is_name(w) and _is_surn(nxt[2])
-                                                                and not _is_name(nxt[2]))):
-            end = nxt[1]
-            j = i + 2
-            if j < len(words) and re.fullmatch(r'\s+', text[end:words[j][0]]) and 'Patr' in _tags(words[j][2]):
-                end = words[j][1]
-                j += 1
-            hits.append(Hit(s, end, 'ФИО'))
-            i = j
+        s, e, w, caps = words[i]
+        span = None
+        if adj(i, i + 1):
+            w2 = words[i + 1][2]
+            w3 = words[i + 2][2] if adj(i + 1, i + 2) else None
+            if _is_surn(w) and _is_name(w2):                      # Иванов Пётр [Сергеевич]
+                span = (i, i + 2 if w3 and _is_patr(w3) else i + 1)
+            elif _is_name(w) and w3 and _is_patr(w2) and (_is_surn(w3) or _unknown(w3)):
+                span = (i, i + 2)                                  # Пётр Сергеевич Иванов
+            elif _is_name(w) and _is_patr(w2):                     # Игоря Петровича
+                span = (i, i + 1)
+                if w3 and _SURN_END.search(w3) and not _is_name(w3):
+                    span = (i, i + 2)                              # … Петровича Пастухова
+            elif _SURN_END.search(w) and _is_name(w2) and w3 and _is_patr(w3):
+                span = (i, i + 2)                                  # Пастухов Олег Андреевич
+            elif _is_name(w) and (_is_surn(w2) or (_unknown(w2) and not caps)):
+                span = (i, i + 1)                                  # Олег Киров, Бориса Кацнельса
+            elif _unknown(w) and _is_name(w2) and w3 and _is_patr(w3):
+                span = (i, i + 2)                                  # Чорбу Анна Викторовна
+        if span:
+            a, b = span
+            hits.append(Hit(words[a][0], words[b][1], 'ФИО'))
+            i = b + 1
             continue
         # Surname + initials
         mi = _INIT1.match(text, e)
-        if mi and _is_surn(w) and not re.match(r'[А-ЯЁа-яё]', text[mi.end():mi.end() + 1]):
+        if mi and (_is_surn(w) or _unknown(w)) and not re.match(r'[А-ЯЁа-яё]', text[mi.end():mi.end() + 1]):
             hits.append(Hit(s, mi.end(), 'ФИО'))
             i += 1
             continue
         # Lone surname after a role word
-        if _is_surn(w) and not _is_name(w) and _ROLE_CTX.search(_left(text, s, 60)):
+        if (_is_surn(w) and not _is_name(w) and 'Geox' not in _tags(w)
+                and _ROLE_CTX.search(_left(text, s, 60))):
             hits.append(Hit(s, e, 'ФИО'))
         i += 1
     for m in _TURKIC.finditer(text):
@@ -498,7 +561,7 @@ def _persons(text: str) -> List[Hit]:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-DETECTORS = [_passport, _phones, _grouped_numbers, _numeric, _swift, _birth,
+DETECTORS = [_passport, _phones, _grouped_numbers, _spaced_numbers, _numeric, _swift, _birth,
              _cadastral, _other, _addresses, _orgs, _persons]
 
 

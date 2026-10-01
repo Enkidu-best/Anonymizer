@@ -46,3 +46,23 @@ def test_docx_contract_round_trip(tmp_path, tmp_db, session_id):
 
     back = _run(anon, tmp_path, tmp_db, session_id, 'deanonymize')
     assert '\n'.join(p.text for p in Document(back).paragraphs) == CONTRACT
+
+
+def test_rtf_cyrillic_round_trip_with_uc0(tmp_path, tmp_db, session_id):
+    """RTF with \\uc0 (no fallback chars) and \\'hh cp1251 escapes: masked and restored."""
+    from core.rtf import decode
+    name = 'Белозёров Аркадий Львович'
+    u = ''.join(f'\\u{ord(c)}' + (' ' if ord(c) > 127 else '') if ord(c) > 127 else c for c in name)
+    cp = ''.join(f"\\'{b:02x}" for b in 'ИНН 1869879737'.encode('cp1251'))
+    raw = ('{\\rtf1\\ansi\\ansicpg1251\\uc0 {\\info{\\author Иванов}}'
+           f'Продавец {u}, {cp}\\par}}').encode('latin-1', errors='ignore')
+    src = tmp_path / 'doc.rtf'
+    src.write_bytes(raw)
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'a', session_id, tmp_db, 'anonymize', use_spacy=False)
+    anon_text, _ = decode((tmp_path / 'a' / r['output_filename']).read_bytes())
+    assert 'Белозёров' not in anon_text and '1869879737' not in anon_text
+    r2 = process_uploaded_file(tmp_path / 'a' / r['output_filename'], tmp_path / 'b', session_id, tmp_db, 'deanonymize')
+    back, _ = decode((tmp_path / 'b' / r2['output_filename']).read_bytes())
+    assert back == decode(raw)[0]

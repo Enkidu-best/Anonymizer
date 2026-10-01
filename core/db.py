@@ -3,8 +3,21 @@ import uuid
 from pathlib import Path
 
 
+class _Conn(sqlite3.Connection):
+    """`with get_conn(db) as conn:` commits/rolls back AND closes (no leaked handles)."""
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            self.close()
+
+
+SCHEMA_VERSION = 3
+
+
 def get_conn(db_path):
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), factory=_Conn)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -62,14 +75,24 @@ def init_db(db_path):
         cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
         if 'canonical_edited' not in cols:
             conn.execute('ALTER TABLE mappings ADD COLUMN canonical_edited INTEGER NOT NULL DEFAULT 0')
-        # Enforce token uniqueness within session.
-        # Existing databases may contain duplicates from the old COUNT(*)+1 bug —
-        # rename the duplicates to free token numbers before adding the index.
-        _dedupe_duplicate_tokens(conn)
-        try:
-            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_map_token ON mappings(session_id, token)')
-        except Exception as e:
-            print(f'[DB] Cannot create idx_map_token: {e}')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS occurrences (
+                session_id TEXT NOT NULL,
+                file_key   TEXT NOT NULL,
+                seq        INTEGER NOT NULL,
+                token      TEXT NOT NULL,
+                original   TEXT NOT NULL
+            )''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_occ ON occurrences(session_id, file_key)')
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        if version < SCHEMA_VERSION:
+            # v2.2 databases may hold duplicate tokens from the old COUNT(*)+1 bug — renumber
+            # them once. From v3 one token may legitimately cover several forms of one entity.
+            if version < 3:
+                _dedupe_duplicate_tokens(conn)
+            conn.execute('DROP INDEX IF EXISTS idx_map_token')
+            conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_map_tok ON mappings(session_id, token)')
 
 
 def _dedupe_duplicate_tokens(conn):
@@ -133,6 +156,7 @@ def get_all_sessions(db_path):
 
 def delete_session(db_path, session_id: str):
     with get_conn(db_path) as conn:
+        conn.execute('DELETE FROM occurrences WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM mappings    WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM exclusions  WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM sessions    WHERE id=?',         (session_id,))
@@ -206,6 +230,43 @@ def _next_token_number(conn, session_id: str, prefix: str) -> int:
     return max_n + 1
 
 
+def _same_entity_token(conn, session_id, original, etype):
+    """Token of an already known entity this value is another form of, else None.
+
+    Persons: same surname (any case/gender form) with compatible name/initials;
+    a lone surname joins only if exactly one known person has it.
+    Other types: same normalized value (digits for numbers, word lemmas for companies)."""
+    from core.entities import Person, value_key
+    rows = conn.execute('SELECT token, original_form FROM mappings WHERE session_id=? AND entity_type=?',
+                        (session_id, etype)).fetchall()
+    if not rows:
+        return None
+    if etype in ('ФИО', 'FIO'):
+        if any(ch.isdigit() for ch in original):
+            return None
+        me = Person.parse(original)
+        if not (me.surname or me.name):
+            return None
+        cands = {}
+        for r in rows:
+            other = Person.parse(r['original_form'])
+            if (other.surname or other.name) and me.compatible(other):
+                cands.setdefault(r['token'], max(cands.get(r['token'], 0), other.specificity()))
+        if len(cands) == 1:
+            return next(iter(cands))
+        if len(cands) > 1 and me.specificity() >= 2:
+            # several namesakes: the most specific compatible one
+            return max(cands, key=cands.get)
+        return None
+    key = value_key(original, etype)
+    if not key:
+        return None
+    for r in rows:
+        if value_key(r['original_form'], etype) == key:
+            return r['token']
+    return None
+
+
 def get_or_create_token(db_path, session_id: str,
                         original_form: str, canonical_form: str,
                         entity_type: str, canonical_edited: bool = False) -> str:
@@ -218,9 +279,11 @@ def get_or_create_token(db_path, session_id: str,
         if row:
             return row['token']
 
-        prefix = _PREFIX.get(entity_type, entity_type.upper())
-        n = _next_token_number(conn, session_id, prefix)
-        token = f'{prefix}_{n}'
+        token = _same_entity_token(conn, session_id, original_form, entity_type)
+        if token is None:
+            prefix = _PREFIX.get(entity_type, entity_type.upper())
+            n = _next_token_number(conn, session_id, prefix)
+            token = f'{prefix}_{n}'
 
         conn.execute(
             'INSERT OR IGNORE INTO mappings '
@@ -262,25 +325,52 @@ def update_mapping_original(db_path, session_id: str, token: str, new_original: 
 
 
 def get_reverse_mappings(db_path, session_id: str) -> dict:
-    """Return {token: text-to-restore} for deanonymization.
+    """Return {token: text-to-restore} for deanonymization of new text (e.g. an LLM reply).
 
-    Restores the exact original form (case, spelling). canonical_form (e.g. the
-    nominative case from pymorphy3) is used only when the user edited the
-    "Базовая форма" column by hand (canonical_edited=1).
+    One token may cover several forms of one entity («Иванов», «Иванову»); the first
+    found form (usually the full one from the preamble) is restored. The user's manual
+    «Базовая форма» (canonical_edited=1) wins. Exact per-place forms of the original
+    file come from get_occurrences().
     """
+    return {t: v for t, (v, _) in get_reverse_info(db_path, session_id).items()}
+
+
+def get_reverse_info(db_path, session_id: str) -> dict:
+    """{token: (value, edited_by_user)}."""
     with get_conn(db_path) as conn:
         rows = conn.execute(
             'SELECT token, original_form, canonical_form, canonical_edited '
-            'FROM mappings WHERE session_id=?',
+            'FROM mappings WHERE session_id=? ORDER BY id',
             (session_id,)
         ).fetchall()
     out = {}
     for r in rows:
         canon = (r['canonical_form'] or '').strip()
-        orig  = (r['original_form'] or '').strip()
-        out[r['token']] = (canon or orig) if (r['canonical_edited'] or not orig) else orig
+        orig = (r['original_form'] or '').strip()
+        if r['canonical_edited'] and canon:
+            out[r['token']] = (canon, True)
+        elif r['token'] not in out:
+            out[r['token']] = (orig or canon, False)
     return out
 
+
+def save_occurrences(db_path, session_id: str, file_key: str, items):
+    """items: [(token, original)] in document order."""
+    with get_conn(db_path) as conn:
+        conn.execute('DELETE FROM occurrences WHERE session_id=? AND file_key=?', (session_id, file_key))
+        conn.executemany('INSERT INTO occurrences (session_id, file_key, seq, token, original) VALUES (?,?,?,?,?)',
+                         [(session_id, file_key, i, t, o) for i, (t, o) in enumerate(items)])
+
+
+def get_occurrences(db_path, session_id: str, file_key: str) -> dict:
+    """{token: [original forms in document order]} for one anonymized file."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute('SELECT token, original FROM occurrences WHERE session_id=? AND file_key=? '
+                            'ORDER BY seq', (session_id, file_key)).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r['token'], []).append(r['original'])
+    return out
 
 def get_top_patterns(db_path, entity_type=None, limit=20) -> list:
     with get_conn(db_path) as conn:

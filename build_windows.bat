@@ -1,42 +1,13 @@
 @echo off
-echo =========================================
-echo  Anonymizer - Windows build (.exe)
-echo =========================================
+chcp 65001 >nul
+rem Сборка Anonymizer для Windows: build_windows.bat  (Python 3.12)
+cd /d "%~dp0"
+if not exist .venv312 py -3.12 -m venv .venv312
+.venv312\Scripts\pip install -q --upgrade pip
+.venv312\Scripts\pip install -q -r requirements-dev.txt
+.venv312\Scripts\python -c "from PIL import Image; Image.open('assets/icon_1024.png').save('assets/Anonymizer.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+.venv312\Scripts\pyinstaller --noconfirm --clean Anonymizer.spec
 echo.
-echo NOTE: Build requires Python 3.11 or 3.12 for best compatibility.
-echo       numpy 1.x does not support Python 3.13+.
-echo       If NER fails in the .exe, rebuild with Python 3.11/3.12.
-echo.
-
-pip install -r requirements-dev.txt
-
-python -m PyInstaller ^
-  --onefile ^
-  --windowed ^
-  --name Anonymizer ^
-  --add-data "static;static" ^
-  --add-data "core;core" ^
-  --hidden-import=docx ^
-  --hidden-import=fitz ^
-  --hidden-import=openpyxl ^
-  --hidden-import=striprtf ^
-  --hidden-import=striprtf.striprtf ^
-  --hidden-import=flask ^
-  --hidden-import=werkzeug ^
-  --hidden-import=jinja2 ^
-  --hidden-import=click ^
-  --collect-all spacy ^
-  --collect-all ru_core_news_lg ^
-  --collect-all thinc ^
-  --collect-all pymorphy3 ^
-  --collect-all pymorphy3_dicts_ru ^
-  app.py
-
-echo.
-echo =========================================
-echo  Done!  dist\Anonymizer.exe
-echo  Copy the file anywhere and run it.
-echo  Browser will open automatically.
-echo  spaCy model is bundled inside the .exe.
-echo =========================================
+echo Готово: dist\Anonymizer\Anonymizer.exe
+echo Распознавание сканов и фото на Windows недоступно (только macOS).
 pause

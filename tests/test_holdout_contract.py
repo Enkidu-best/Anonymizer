@@ -6,8 +6,7 @@ the text exactly. All data is fictional; requisites have valid checksums.
 """
 import pytest
 
-from core.anonymizer import anonymize_text_pipeline, apply_reverse
-from core.db import get_reverse_mappings
+from core.anonymizer import anonymize_text, restore_text
 
 CONTRACT = """ДОГОВОР КУПЛИ-ПРОДАЖИ ДОЛИ В УСТАВНОМ КАПИТАЛЕ № 7/2025
 
@@ -51,9 +50,12 @@ def test_holdout_contract(tmp_db, session_id, use_spacy):
     if use_spacy:
         import core.anonymizer as A
         A._do_load()
-    out, _ = anonymize_text_pipeline(CONTRACT, tmp_db, session_id, use_spacy=use_spacy, use_llm=False)
+    out, occ = anonymize_text(CONTRACT, tmp_db, session_id, use_spacy=use_spacy, use_llm=False)
     leaked = [m for m in MUST_MASK if m in out]
     lost = [k for k in MUST_KEEP if k not in out]
     assert not leaked, f'leaked: {leaked}\n{out}'
     assert not lost, f'over-masked: {lost}\n{out}'
-    assert apply_reverse(out, get_reverse_mappings(tmp_db, session_id)) == CONTRACT
+    assert restore_text(out, tmp_db, session_id, occ) == CONTRACT
+    # one person = one token: the seller in the preamble and in the signature
+    tokens = {t for t in occ if t.startswith('FIO')}
+    assert len(tokens) == 2, occ

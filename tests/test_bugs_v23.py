@@ -58,7 +58,7 @@ def test_spacy_fio_rejects_common_garbage(bad):
     'Тихомиров Глеб Аркадьевич',
     'Ладогина Вера Степановна',
     'Москотельниковых',          # legitimate surname (gen. pl.)
-    'Луговой В.Е.',
+    'Луганов В.Е.',
     'Г.А. Тихомиров',
 ])
 def test_spacy_fio_accepts_real_fios(good):
@@ -122,7 +122,7 @@ def test_normalize_fio_inflected_to_nominative():
 
 def test_normalize_fio_keeps_initials():
     """Initials like 'А.А.' must not be re-cased into a verb form."""
-    out = _normalize_fio('Луговой В.Е.')
+    out = _normalize_fio('Луганов В.Е.')
     assert 'В.' in out and 'Е.' in out
 
 

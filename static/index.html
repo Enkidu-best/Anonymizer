@@ -387,7 +387,7 @@ tr:hover td{background:var(--card2)}
           <span class="fmt">PDF</span><span class="fmt">XLSX</span><span class="fmt">RTF</span>
         </div>
       </div>
-      <input type="file" id="fInput" class="hidden" multiple accept=".txt,.docx,.pdf,.xlsx,.rtf" onchange="onFileSelect(event)">
+      <input type="file" id="fInput" class="hidden" multiple accept=".txt,.docx,.docm,.doc,.odt,.pptx,.pdf,.xlsx,.xlsm,.rtf,.jpg,.jpeg,.png,.heic,.tif,.tiff" onchange="onFileSelect(event)">
 
       <!-- FILE LIST -->
       <div id="fileList"></div>
@@ -399,6 +399,7 @@ tr:hover td{background:var(--card2)}
           <span id="procTxt">Обработать</span>
         </button>
         <a id="dlAllBtn" class="btn-dl-all hidden" href="#">⬇ Скачать все (ZIP)</a>
+        <button type="button" class="btn-dl-all" onclick="copyLlmInstruction()" title="Текст для внешней нейросети: не менять плейсхолдеры">📋 Инструкция для нейросети</button>
       </div>
 
       <!-- MAPPINGS -->
@@ -774,7 +775,7 @@ function setMode(m){
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
-const EXTS=['.txt','.docx','.pdf','.xlsx','.rtf'];
+const EXTS=['.txt','.docx','.docm','.doc','.odt','.pptx','.pdf','.xlsx','.xlsm','.rtf','.jpg','.jpeg','.png','.heic','.tif','.tiff'];
 function onDragOver(e){e.preventDefault();$('dropZone').classList.add('over');}
 function onDragLeave(){$('dropZone').classList.remove('over');}
 function onDrop(e){e.preventDefault();$('dropZone').classList.remove('over');addFiles([...e.dataTransfer.files]);}
@@ -826,7 +827,7 @@ function renderFileList(){
         <div class="file-name" title="${esc(f.name)}">${sicoFor(item.status)} ${esc(f.name)}</div>
         <div class="file-meta">
           ${item.status==='ok'
-            ? `Объектов: ${item.entities} → <span style="color:var(--text2)">${esc(item.output||'')}</span>`
+            ? `Объектов: ${item.entities} → <span style="color:var(--text2)">${esc(item.output||'')}</span>${leakNote(item)}`
             : item.status==='loading' ? 'Обработка...'
             : fmtSize(f.size)}
         </div>
@@ -839,6 +840,19 @@ function renderFileList(){
       </div>
     </div>`;
   }).join('');
+}
+
+function leakNote(item){
+  if(S.mode!=='anonymize'||!item.leaks)return item.note?`<div class="file-err">${esc(item.note)}</div>`:'';
+  if(!item.leaks.length)return `<div style="color:var(--green,#2e7d32)">✓ Проверка утечек: не найдено</div>`;
+  const list=item.leaks.slice(0,15).map(l=>`${l.type}: ${l.value}`).join('\n');
+  return `<div class="file-err" title="${esc(list)}">⚠ Проверьте: ${item.leaks.length} подозрительных мест (наведите курсор). Добавьте их вручную в таблицу замен и нажмите «Переобработать».</div>`;
+}
+
+const LLM_INSTRUCTION = 'В тексте есть обезличенные данные — плейсхолдеры в квадратных скобках вида [FIO_1], [YUL_2], [INN_3]. Не изменяй, не склоняй, не переводи и не объединяй их, сохраняй как есть, включая квадратные скобки. Один плейсхолдер — одно лицо или одна организация.';
+async function copyLlmInstruction(){
+  try{await navigator.clipboard.writeText(LLM_INSTRUCTION);toast('Инструкция скопирована — вставьте её в чат нейросети перед документом','ok');}
+  catch{prompt('Скопируйте инструкцию:',LLM_INSTRUCTION);}
 }
 
 function sicoFor(s){return s==='ok'?'✅':s==='err'?'❌':s==='loading'?'⏳':'';}
@@ -892,7 +906,7 @@ async function doProcess(){
     S.lastSid=d.session_id;
     d.results.forEach(r=>{
       const item=S.files.find(x=>x.file.name===r.filename&&x.status==='loading');
-      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.entities=r.entities_found||0;item.error=r.error||null;}
+      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;}
     });
     if(d.mappings){S.mappings=d.mappings;renderMap();updateMapCount();}
     const ok=d.results.filter(r=>r.status==='ok').length,tot=d.results.length;
@@ -959,28 +973,40 @@ function updateAddManualBtn() {
   if (!btn) return;
   btn.disabled = !(S.active && S.mappings && S.mappings.length > 0);
 }
+function groupMappings(list){
+  // one row per token: every form of one person/company shares a token
+  const by=new Map();
+  for(const m of list){
+    if(!by.has(m.token))by.set(m.token,{...m,forms:[]});
+    const g=by.get(m.token);
+    if(m.original_form&&!g.forms.includes(m.original_form))g.forms.push(m.original_form);
+    if(m.canonical_edited)g.canonical_form=m.canonical_form;
+  }
+  return [...by.values()];
+}
 function renderMap(search='',typeF=''){
-  let data=S.mappings;
-  if(search){const q=search.toLowerCase();data=data.filter(m=>m.token.toLowerCase().includes(q)||(m.original_form||'').toLowerCase().includes(q)||(m.canonical_form||'').toLowerCase().includes(q));}
+  let data=groupMappings(S.mappings);
+  if(search){const q=search.toLowerCase();data=data.filter(m=>m.token.toLowerCase().includes(q)||m.forms.join(' ').toLowerCase().includes(q)||(m.canonical_form||'').toLowerCase().includes(q));}
   if(typeF)data=data.filter(m=>m.token.startsWith(typeF+'_'));
   const tbody=$('mapTbody');
   if(!data.length){tbody.innerHTML=`<tr><td colspan="5" class="tbl-empty">${S.mappings.length?'Ничего не найдено':'Маппинг пуст'}</td></tr>`;return;}
   tbody.innerHTML=data.map(m=>{
     const p=m.token.split('_')[0];
+    const forms=m.forms.map((f,i)=>i?`<span style="color:var(--text2)">${esc(f)}</span>`:esc(f)).join(' · ');
     return `<tr>
       <td class="td-token">${esc(m.token)}</td>
-      <td>${esc(m.original_form||'')}</td>
+      <td title="${m.forms.length>1?'Все формы этого лица/организации в документе — одна метка':''}">${forms}</td>
       <td>${esc(m.canonical_form||'')}</td>
       <td><span class="badge t-${p}">${tokenLabel(p)}</span></td>
       <td><div class="td-actions">
-        <button class="btn-td btn-td-edit" onclick="editMapping('${esc(m.token)}','${esc(m.original_form||'')}','${esc(m.entity_type||'')}')">✏️</button>
+        <button class="btn-td btn-td-edit" onclick="editMapping('${esc(m.token)}','${esc(m.forms[0]||'')}','${esc(m.entity_type||'')}')">✏️</button>
         <button class="btn-td btn-td-del"  onclick="deleteMapping('${esc(m.token)}')">🗑️</button>
       </div></td>
     </tr>`;
   }).join('');
 }
 function filterMap(){renderMap($('mapSearch').value,$('mapType').value);}
-function updateMapCount(){$('mapCount').textContent=S.mappings.length?`${S.mappings.length} записей`:'';}
+function updateMapCount(){const n=groupMappings(S.mappings).length;$('mapCount').textContent=n?`${n} записей`:'';}
 
 // ─── Edit / Add mapping modal ────────────────────────────────────────────────
 function openEditMapModal({title, token=null, original='', canonical='', etype='ФИО'}) {

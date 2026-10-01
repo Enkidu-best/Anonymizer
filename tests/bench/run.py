@@ -24,13 +24,13 @@ USE_NER = '--spacy' in sys.argv or '--ner' in sys.argv
 
 def anonymize(text):
     """Adapter for the v2.3 API. Returns (masked_text, restored_text)."""
-    from core.db import init_db, create_session, get_reverse_mappings
-    from core.anonymizer import anonymize_text_pipeline, apply_reverse
+    from core.db import init_db, create_session
+    from core.anonymizer import anonymize_text, restore_text
     db = os.path.join(tempfile.mkdtemp(), 'bench.db')
     init_db(db)
     sid = create_session(db, 'bench')
-    out, _ = anonymize_text_pipeline(text, db, sid, use_spacy=USE_NER, use_llm=False)
-    return out, apply_reverse(out, get_reverse_mappings(db, sid))
+    out, occ = anonymize_text(text, db, sid, use_spacy=USE_NER, use_llm=False)
+    return out, restore_text(out, db, sid, occ)
 
 
 def main():

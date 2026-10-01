@@ -12,12 +12,13 @@ Main metric is **recall**: a missed name leaks abroad, an extra mask only slight
 
 ```bash
 python3.12 -m venv .venv312 && .venv312/bin/pip install -r requirements-dev.txt   # Python 3.12
-python app.py                          # opens http://127.0.0.1:5000
+python app.py                          # native window; --browser / --server
 python -m pytest -q                    # unit + format tests (UI tests need `playwright install chromium`)
 python tests/bench/run.py              # recall bench, 200 variants, regex only
 python tests/bench/run.py --ner        # same with spaCy
 # tests/test_holdout_contract.py — contract the rules were NOT tuned on (overfitting guard)
-./build_macos.sh / build_windows.bat   # PyInstaller build
+./build_macos.sh / build_windows.bat   # dist/Anonymizer.app + .dmg / Windows folder
+python scripts/audit_folder.py <dir>   # local audit of real documents → private/ (git-ignored)
 ```
 
 Debug endpoints: `/api/status`, `/api/debug`, `/api/llm-status`.
@@ -31,33 +32,43 @@ Debug endpoints: `/api/status`, `/api/debug`, `/api/llm-status`.
 - Never commit real documents, `anon.db*`, `uploads/`, real names/addresses/requisites. Test data must be fictional, generated with `tests/bench/ids.py` (valid checksums).
 - No force-push, history rewrite, deleting owner files or changing repo visibility without the owner's explicit "да".
 
-## Architecture (v2.3)
+## Architecture (v3)
 
 ### Pipeline
-`anonymize_text_pipeline(text, db_path, session_id, use_spacy, use_llm)` in [core/anonymizer.py](core/anonymizer.py) is the single entry point. Passes run in order; each sees text with earlier `[TOKEN]` placeholders already inserted and skips them (`TOKEN_INNER_RE`, `PARTIAL_TOKEN_RE`):
+`anonymize_text_pipeline(text, db_path, session_id, use_spacy, use_llm)` in [core/anonymizer.py](core/anonymizer.py) builds `{original: "[TOKEN]"}` for a whole document. Passes in order (each sees earlier `[TOKEN]`s and skips them):
 
 0. `_apply_global_known` — values remembered from earlier sessions (`known_entities`).
-1. `_apply_opf_pass` — legal form + quoted name; only the name is masked (`ООО «X»` → `ООО «[YUL_1]»`).
-2. `_apply_regex_pass` — first the rule detectors from [core/detectors.py](core/detectors.py) (form + context + checksums from [core/validators.py](core/validators.py); pymorphy3 grammemes Surn/Name/Patr for persons; address = chain of components; only values are marked, keywords stay), then the legacy `REGEX_PATTERNS`. Overlaps: first come wins. Replacement is positional.
-3. `_apply_spacy_pass` — spaCy `ru_core_news_lg` PER/ORG, filtered by `_validate_spacy_fio` / `_validate_spacy_org`; names normalized with pymorphy3 (`_normalize_fio`).
-4. `core/llm.py: apply_llm_pass` — optional Ollama call.
-5. `_apply_known_entities` — re-applies mappings already in the session.
+1. `_apply_opf_pass` — legal form + quoted name, incl. typographic quotes; only the name is masked. Paying bank in requisites is skipped (`detectors._is_payment_bank`).
+2. `_apply_regex_pass` — rule detectors from [core/detectors.py](core/detectors.py) (checksums from [core/validators.py](core/validators.py), context windows, pymorphy3 grammemes for persons, address component chains; values only), then legacy `REGEX_PATTERNS`. **Patterns never cross a newline** (`[^\S\n]`, not `\s`). Positional replacement.
+3. `_apply_spacy_pass` — spaCy PER/ORG, legal form stripped, filtered.
+4. `core/llm.py: apply_llm_pass` — optional Ollama.
+5. `_propagate_surnames` — a surname of a found person anywhere in the text → same token.
+6. `_apply_known_entities` — re-applies session mappings (bounded).
 
-Each pass returns `(new_text, {original: "[TOKEN]"})`; the merged dict is what format handlers apply via `replace_bounded()` (one pass, longest first, word/number boundaries — never plain `str.replace`). Exclusions (`exclusions` table) are honoured by every pass. The paying bank in requisites («р/с … в ПАО Сбербанк») is deliberately not masked (`_is_payment_bank`).
+Text-level API: `anonymize_text()` / `restore_text()` (used by the bench and tests).
 
-NER loads on a background thread (`start_ner_loading`); UI polls `/api/status` and works regex-only meanwhile.
+### One token per entity, exact restore
+`db.get_or_create_token` reuses the token of the same entity (`_same_entity_token` + [core/entities.py](core/entities.py): surname key in any case/gender, compatible name/initials; companies by word lemmas; numbers by digits). Several `mappings` rows may share a token (no unique index on token since schema v3, `PRAGMA user_version`).
+While a file is anonymized, `make_finder(..., log)` records `(token, original)` in document order → `occurrences` table keyed by the output file name. Deanonymizing that file uses `make_rev_finder(..., occurrences)`: the k-th occurrence of a token gets the k-th recorded form. New text (an LLM reply) gets the first/main form; a hand-edited «Базовая форма» (`canonical_edited=1`) always wins. Token parsing is tolerant (`TOKEN_LOOSE_RE`: `FIO_1`, `[FIO 1]`, `[ФИО_1]`…).
 
 ### Format handlers
-[core/handlers.py](core/handlers.py): `process_uploaded_file` → `_anon_<fmt>` / `_deanon_<fmt>`. Handlers extract text, run the pipeline to build the replacement dict, then apply it element by element (DOCX paragraph incl. tables/headers/footers with run-aware `_replace_para`, XLSX string cells, PDF redaction rects, RTF raw text) to keep formatting. DOCX tracked changes are accepted first. Known gaps are listed in CLAUDE_CODE_TASK.md §2.3 (items 21-25).
+[core/handlers.py](core/handlers.py): `process_uploaded_file` → detect once on the whole document text → apply spans place by place → anonymized file name (`anonymize_filename`) → `leak_check` (re-extract output incl. metadata via [core/extract.py](core/extract.py), report originals still present and detector hits outside tokens).
+- DOCX/PPTX: [core/ooxml.py](core/ooxml.py) on zip/XML level — every `w:p`/`a:p` in every part (text boxes, footnotes, comments, charts), revisions accepted, hyperlink targets (URL-decoded), metadata scrubbed. Replacement by char position across runs keeps formatting.
+- RTF: [core/rtf.py](core/rtf.py) decodes `\'hh`/`\uN` with a char→raw-bytes map; only text bytes are rewritten.
+- PDF: words with positions; lines of a block joined by space; redaction with token text sized to fit. Scans → OCR.
+- Images and scanned pages: [core/ocr.py](core/ocr.py) (Apple Vision, macOS only), black boxes with token, EXIF dropped. Not reversible.
+- DOC/ODT: converted to DOCX via `textutil` (macOS) or LibreOffice.
+- Replacement everywhere goes through `replace_spans`/`replace_bounded` (boundaries: letters for words, digits for numbers) — never `str.replace`.
 
-### Tokens and DB
-[core/db.py](core/db.py), SQLite. Tokens are ASCII `[FIO_1]`, `[YUL_2]`… (`_PREFIX` maps Russian entity types to prefixes; ASCII keeps PDF insertion safe). Numbering per session and prefix = `MAX+1`. `mappings` is UNIQUE on `(session_id, original_form, entity_type)`; `get_reverse_mappings` feeds `apply_reverse` and returns `original_form` (exact case) unless the user edited «Базовая форма» by hand (`canonical_edited=1`). Other tables: `sessions`, `exclusions`, `known_entities`, `user_patterns`.
-
-### Paths
-[app.py](app.py) splits `BUNDLE_DIR` (read-only, PyInstaller `_MEIPASS`) from `DATA_DIR` (writable; holds `anon.db`, `uploads/`). Never write to `BUNDLE_DIR`. Moving data to Application Support / %APPDATA% is planned (stage 8).
+### Paths, app, security
+[app.py](app.py): `DATA_DIR` = repo dir in dev, `~/Library/Application Support/Anonymizer` (or `%APPDATA%`) when frozen, `ANONYMIZER_DATA_DIR` overrides. Uploads older than 30 days are purged at start. `main()`: free port, native window via pywebview (`--browser`, `--server` flags). `_local_only` rejects foreign Host/Origin/cross-site requests. Output names are recorded per input in `uploads/<sid>/manifest.json`.
+Build: `Anonymizer.spec` (onedir; Mac `.app` + Windows), `build_macos.sh` (icon → icns, PyInstaller, ad-hoc codesign, DMG).
 
 ### Version
-Single source: [core/version.py](core/version.py). Shown in the UI via `/api/status`.
+Single source: [core/version.py](core/version.py), shown in the UI via `/api/status`.
 
 ### Frontend
 Single file [static/index.html](static/index.html), no build step.
+
+### Local data never in git
+`Проверка распознавания текста/`, `private/` (audit output: `scripts/audit_folder.py`), `*.bundle`, `*.tar.gz`, `anon.db*`, `uploads/` are git-ignored. Test data must be fictional.

@@ -1,13 +1,27 @@
 """
-File format handlers — TXT, DOCX, PDF, XLSX, RTF.
-All anonymization uses anonymize_text_pipeline() which returns
-(anonymized_text, replacements_dict).
+File format handlers.
+
+Each document is read as a whole (all textual places incl. headers, footnotes,
+text boxes, comments, metadata), the detection pipeline runs ONCE on the full
+text to build {original: [TOKEN]}, then replacements are applied place by place
+by character position, keeping formatting.
+
+Formats: TXT, DOCX, PPTX, XLSX, PDF (text layer or scan via OCR), RTF,
+DOC/ODT (converted to DOCX), images JPG/PNG/HEIC/TIFF (OCR, masked boxes).
 """
-import os
+import re
+import shutil
+import unicodedata
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-ALLOWED_EXTENSIONS = {'.txt', '.docx', '.pdf', '.xlsx', '.rtf'}
+OFFICE_EXT = {'.docx', '.docm', '.pptx'}
+SHEET_EXT = {'.xlsx', '.xlsm'}
+CONVERT_EXT = {'.doc', '.odt'}
+IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.heic', '.tif', '.tiff', '.bmp', '.webp'}
+ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.rtf'} | OFFICE_EXT | SHEET_EXT | CONVERT_EXT | IMAGE_EXT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -15,28 +29,68 @@ ALLOWED_EXTENSIONS = {'.txt', '.docx', '.pdf', '.xlsx', '.rtf'}
 # ─────────────────────────────────────────────────────────────────────────────
 
 def validate_file(filepath: Path):
+    from core import ocr
     ext = filepath.suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         return False, (f'Формат «{ext}» не поддерживается. '
                        f'Поддерживаются: {", ".join(sorted(ALLOWED_EXTENSIONS))}')
-    if ext == '.pdf' and not _pdf_has_text_layer(filepath):
+    if ext in IMAGE_EXT and not ocr.available():
+        return False, 'Распознавание изображений доступно только на macOS.'
+    if ext == '.pdf' and not _pdf_has_text_layer(filepath) and not ocr.available():
         return False, ('PDF не содержит текстового слоя (скан). '
-                       'Обработка без OCR невозможна.')
+                       'Распознавание сканов доступно только на macOS.')
+    if ext in CONVERT_EXT and not _converter():
+        return False, f'Для «{ext}» нужен macOS (textutil) или LibreOffice. Сохраните файл как DOCX.'
     return True, ''
 
 
 def _pdf_has_text_layer(filepath: Path) -> bool:
     try:
-        import fitz
-        doc = fitz.open(str(filepath))
+        import pymupdf
+        doc = pymupdf.open(str(filepath))
         return any(page.get_text().strip() for page in doc)
     except Exception:
         return False
 
 
+def _converter():
+    if shutil.which('textutil'):
+        return 'textutil'
+    for name in ('soffice', 'libreoffice'):
+        if shutil.which(name):
+            return name
+    return None
+
+
+def _convert_to_docx(src: Path, out_dir: Path) -> Path:
+    tool = _converter()
+    dst = out_dir / (src.stem + '.docx')
+    if tool == 'textutil':
+        subprocess.run(['textutil', '-convert', 'docx', '-output', str(dst), str(src)],
+                       check=True, capture_output=True, timeout=120)
+    else:
+        subprocess.run([tool, '--headless', '--convert-to', 'docx', '--outdir', str(out_dir), str(src)],
+                       check=True, capture_output=True, timeout=180)
+    return dst
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
+
+_SUFFIXES = ('_anon', '_restored')
+_PREFIXES = ('anonymized_', 'deanonymized_', 'anon_', 'deanon_')
+
+
+def _clean_stem(stem: str) -> str:
+    for pfx in _PREFIXES:
+        if stem.lower().startswith(pfx):
+            stem = stem[len(pfx):]
+    for sfx in _SUFFIXES:
+        if stem.endswith(sfx):
+            stem = stem[:-len(sfx)]
+    return stem
+
 
 def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
@@ -46,204 +100,315 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
     if not valid:
         raise ValueError(err)
 
-    ext    = input_path.suffix.lower()
-    prefix = 'anonymized' if mode == 'anonymize' else 'deanonymized'
-    stem   = input_path.stem
-    for pfx in ('anonymized_', 'deanonymized_', 'anon_', 'deanon_'):
-        if stem.lower().startswith(pfx):
-            stem = stem[len(pfx):]
-            break
+    ext = input_path.suffix.lower()
+    # macOS stores names decomposed (й = и + ◌̆) — compose before matching
+    stem = _clean_stem(unicodedata.normalize('NFC', input_path.stem))
+    work = None
+    src = input_path
+    if ext in CONVERT_EXT:
+        work = Path(tempfile.mkdtemp())
+        src = _convert_to_docx(input_path, work)
+        ext = '.docx'
+    out_ext = '.png' if ext in ('.heic', '.bmp', '.webp') else ext
 
-    out_ext = '.docx' if ext == '.pdf' else ext
-    output_name = f'{prefix}_{stem}{out_ext}'
-    output_path = output_dir / output_name
+    try:
+        from core.db import save_occurrences, get_occurrences
+        tmp_out = output_dir / f'.tmp_{session_id[:8]}{out_ext}'
+        if mode == 'anonymize':
+            _LOG.clear()
+            result = _anonymize(src, tmp_out, ext, session_id, db_path, use_spacy, use_llm)
+            occ = list(_LOG)
+            name = f'{anonymize_filename(stem, session_id, db_path)}_anon{out_ext}'
+            final = output_dir / _safe_name(name)
+            tmp_out.replace(final)
+            save_occurrences(db_path, session_id, final.name, occ)
+            result['leaks'] = leak_check(final, session_id, db_path)
+        else:
+            from core.anonymizer import restore_text
+            _OCC.clear()
+            _OCC.update(get_occurrences(db_path, session_id, safe_upload_name(input_path.name)))
+            result = _deanonymize(src, tmp_out, ext, session_id, db_path)
+            name = f'{restore_text(stem, db_path, session_id)}_restored{out_ext}'
+            final = output_dir / _safe_name(name)
+            tmp_out.replace(final)
+    finally:
+        if work:
+            shutil.rmtree(work, ignore_errors=True)
 
-    if mode == 'anonymize':
-        result = _anonymize(input_path, output_path, ext, session_id, db_path,
-                            use_spacy, use_llm)
-    else:
-        result = _deanonymize(input_path, output_path, ext, session_id, db_path)
-
-    result['output_filename'] = output_name
-    if '_fallback_path' in result:
-        fallback = Path(result.pop('_fallback_path'))
-        result['output_filename'] = fallback.name
+    result['output_filename'] = final.name
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Anonymize dispatcher
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _anonymize(input_path, output_path, ext, session_id, db_path,
-               use_spacy=True, use_llm=False):
-    if ext == '.txt':  return _anon_txt(input_path, output_path, session_id, db_path, use_spacy, use_llm)
-    if ext == '.docx': return _anon_docx(input_path, output_path, session_id, db_path, use_spacy, use_llm)
-    if ext == '.pdf':  return _anon_pdf(input_path, output_path, session_id, db_path, use_spacy, use_llm)
-    if ext == '.xlsx': return _anon_xlsx(input_path, output_path, session_id, db_path, use_spacy, use_llm)
-    if ext == '.rtf':  return _anon_rtf(input_path, output_path, session_id, db_path, use_spacy, use_llm)
-    raise ValueError(f'Unsupported: {ext}')
+def _safe_name(name: str) -> str:
+    """File name without path separators or control characters (Cyrillic kept)."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', name).strip(' .')
+    return name[:180] or 'document'
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Deanonymize dispatcher
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _deanonymize(input_path, output_path, ext, session_id, db_path):
-    from core.db       import get_reverse_mappings
-    from core.anonymizer import apply_reverse
-
-    rev = get_reverse_mappings(db_path, session_id)
-
-    if ext == '.txt':
-        text = input_path.read_text(encoding='utf-8', errors='replace')
-        output_path.write_text(apply_reverse(text, rev), encoding='utf-8')
-        return {}
-    if ext == '.docx': return _deanon_docx(input_path, output_path, rev)
-    if ext == '.pdf':  return _deanon_pdf(input_path, output_path, rev)
-    if ext == '.xlsx': return _deanon_xlsx(input_path, output_path, rev)
-    if ext == '.rtf':  return _deanon_rtf(input_path, output_path, rev)
-    raise ValueError(f'Unsupported: {ext}')
+def safe_upload_name(name: str) -> str:
+    return _safe_name(Path(name.replace('\\', '/')).name)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DOCX helpers
-# ─────────────────────────────────────────────────────────────────────────────
+def anonymize_filename(stem: str, session_id: str, db_path) -> str:
+    """Mask PII in a file name — otherwise «Договор_Иванов.docx» leaks the name.
 
-def _accept_tracked_changes(doc):
-    from docx.oxml.ns import qn
-    body = doc.element.body
-    for ins in list(body.iter(qn('w:ins'))):
-        parent = ins.getparent()
-        if parent is None:
+    Rule detectors run on the name; then every person/company already masked in
+    the document is searched in the name by dictionary forms of its words
+    («Пастухова Олега» ↔ «Пастухов»): the whole name, or a surname / a rare word
+    of a company name on its own."""
+    from core.anonymizer import anonymize_text_pipeline, morph_normal, ANY_TOKEN_RE
+    from core.db import get_session_mappings, get_or_create_token
+    from core.detectors import _unknown
+    text = stem.replace('_', ' ')
+    blocked = []
+    words = [m for m in re.finditer(r'[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё\-]*', text)
+             if not any(a <= m.start() < b for a, b in blocked)]
+    lem = [morph_normal(m.group()) for m in words]
+    spans = []
+    for mp in get_session_mappings(db_path, session_id):
+        if mp['entity_type'] not in ('ФИО', 'ЮЛ'):
             continue
-        idx = list(parent).index(ins)
-        for child in list(ins):
-            parent.insert(idx, child)
-            idx += 1
-        parent.remove(ins)
-    for del_elem in list(body.iter(qn('w:del'))):
-        parent = del_elem.getparent()
-        if parent is not None:
-            parent.remove(del_elem)
-
-
-def _replace_para(para, replacements: dict):
-    if not replacements or not para.text.strip():
-        return
-    from core.anonymizer import replace_bounded, contains_bounded
-    sorted_reps = sorted(replacements.items(), key=lambda x: -len(x[0]))
-
-    for run in para.runs:
-        if run.text:
-            new_text = replace_bounded(run.text, replacements)
-            if new_text != run.text:
-                run.text = new_text
-
-    for old, new in sorted_reps:
-        runs = para.runs
-        if not runs:
+        orig_words = re.findall(r'[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё\-]*', mp['original_form'])
+        if not orig_words:
             continue
-        full = ''.join(r.text for r in runs)
-        if not contains_bounded(full, old):
+        seq = [morph_normal(w) for w in orig_words]
+        n = len(seq)
+        for i in range(len(words) - n + 1):
+            if lem[i:i + n] == seq:
+                spans.append((words[i].start(), words[i + n - 1].end(), mp['entity_type']))
+        singles = set()
+        if mp['entity_type'] == 'ФИО' and len(orig_words[0]) > 2:
+            singles.add(seq[0])                                   # surname alone
+        if mp['entity_type'] == 'ЮЛ':
+            singles |= {l for w, l in zip(orig_words, seq) if len(w) > 2 and _unknown(w)}
+        for m, l in zip(words, lem):
+            if l in singles and m.group()[0].isupper():
+                spans.append((m.start(), m.end(), mp['entity_type']))
+    out, last = [], 0
+    for a, b, etype in sorted(spans, key=lambda x: (x[0], -x[1])):
+        if a < last:
             continue
-        runs[0].text = replace_bounded(full, {old: new})
-        for r in runs[1:]:
-            r.text = ''
-
-    try:
-        from docx.oxml.ns import qn
-        for hl in list(para._p.iter(qn('w:hyperlink'))):
-            hl_modified = False
-            for run_el in hl.iter(qn('w:r')):
-                for t_el in run_el.iter(qn('w:t')):
-                    if t_el.text:
-                        new_text = replace_bounded(t_el.text, replacements)
-                        if new_text != t_el.text:
-                            t_el.text = new_text
-                            hl_modified = True
-            if hl_modified:
-                parent = hl.getparent()
-                if parent is not None:
-                    idx = list(parent).index(hl)
-                    for child in list(hl):
-                        parent.insert(idx, child)
-                        idx += 1
-                    parent.remove(hl)
-    except Exception:
-        pass
+        frag = text[a:b]
+        out.append(text[last:a])
+        out.append(f'[{get_or_create_token(db_path, session_id, frag, frag, etype)}]')
+        last = b
+    out.append(text[last:])
+    text, _ = anonymize_text_pipeline(''.join(out), db_path, session_id, use_spacy=False, use_llm=False)
+    return text
 
 
-def _iter_all_paras(doc):
-    yield from doc.paragraphs
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                yield from cell.paragraphs
-    for section in doc.sections:
-        try:
-            yield from section.header.paragraphs
-            yield from section.footer.paragraphs
-        except Exception:
-            pass
-
-
-def _anon_txt(input_path, output_path, session_id, db_path,
-              use_spacy=True, use_llm=False):
+def _detect(text, session_id, db_path, use_spacy, use_llm):
     from core.anonymizer import anonymize_text_pipeline
-    text      = input_path.read_text(encoding='utf-8', errors='replace')
-    out, reps = anonymize_text_pipeline(text, db_path, session_id,
-                                        use_spacy=use_spacy, use_llm=use_llm)
-    output_path.write_text(out, encoding='utf-8')
+    _, reps = anonymize_text_pipeline(text, db_path, session_id,
+                                      use_spacy=use_spacy, use_llm=use_llm)
+    return reps
+
+
+# Per-call state: forms recorded while anonymizing / forms to restore while deanonymizing.
+# Requests are processed one file at a time (Flask dev server, single worker).
+_LOG: list = []
+_OCC: dict = {}
+
+
+def _finder(reps):
+    from core.anonymizer import make_finder
+    return make_finder(reps, _LOG)
+
+
+def _rev_finder(session_id, db_path):
+    from core.anonymizer import make_rev_finder
+    return make_rev_finder(db_path, session_id, dict(_OCC))
+
+
+def _anonymize(src, out, ext, session_id, db_path, use_spacy, use_llm):
+    if ext == '.txt':
+        return _anon_txt(src, out, session_id, db_path, use_spacy, use_llm)
+    if ext in OFFICE_EXT:
+        return _anon_office(src, out, session_id, db_path, use_spacy, use_llm)
+    if ext in SHEET_EXT:
+        return _anon_xlsx(src, out, session_id, db_path, use_spacy, use_llm)
+    if ext == '.pdf':
+        return _anon_pdf(src, out, session_id, db_path, use_spacy, use_llm)
+    if ext == '.rtf':
+        return _anon_rtf(src, out, session_id, db_path, use_spacy, use_llm)
+    if ext in IMAGE_EXT:
+        return _anon_image(src, out, session_id, db_path, use_spacy, use_llm)
+    raise ValueError(f'Unsupported: {ext}')
+
+
+def _deanonymize(src, out, ext, session_id, db_path):
+    find = _rev_finder(session_id, db_path)
+    if ext == '.txt':
+        from core.anonymizer import apply_spans
+        text = src.read_text(encoding='utf-8', errors='replace')
+        out.write_text(apply_spans(text, find(text)), encoding='utf-8')
+        return {}
+    if ext in OFFICE_EXT:
+        from core.ooxml import Package
+        pkg = Package(src)
+        pkg.apply(find)
+        pkg.save(out)
+        return {}
+    if ext in SHEET_EXT:
+        return _deanon_xlsx(src, out, find)
+    if ext == '.pdf':
+        return _deanon_pdf(src, out, find)
+    if ext == '.rtf':
+        from core import rtf
+        raw, _ = rtf.apply(src.read_bytes(), find)
+        out.write_bytes(raw)
+        return {}
+    if ext in IMAGE_EXT:
+        shutil.copy2(src, out)
+        return {'note': 'Изображение восстановить нельзя: закрашенные области не обратимы.'}
+    raise ValueError(f'Unsupported: {ext}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Leak check (CLAUDE_CODE_TASK.md §3.4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def leak_check(path: Path, session_id: str, db_path) -> list:
+    """Re-read the output file (text + metadata) and report suspicious places:
+    original values still present, or detector hits outside tokens."""
+    from core.extract import extract_text
+    from core.anonymizer import contains_bounded, ANY_TOKEN_RE
+    from core.detectors import find_all
+    from core.db import get_session_mappings
+    try:
+        text = extract_text(path)
+    except Exception:
+        return []
+    leaks = []
+    for m in get_session_mappings(db_path, session_id):
+        v = m['original_form']
+        if len(v) > 3 and contains_bounded(text, v):
+            leaks.append({'type': m['entity_type'], 'value': v, 'reason': 'исходное значение'})
+    seen = {l['value'] for l in leaks}
+    for h in find_all(text):
+        frag = text[h.start:h.end]
+        if ANY_TOKEN_RE.search(frag) or frag in seen or re.fullmatch(r'[\[\]\w]*_\d+\]?', frag):
+            continue
+        seen.add(frag)
+        leaks.append({'type': h.type, 'value': frag, 'reason': 'найдено повторной проверкой'})
+    return leaks[:200]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TXT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _anon_txt(src, out, session_id, db_path, use_spacy, use_llm):
+    from core.anonymizer import apply_spans
+    text = src.read_text(encoding='utf-8', errors='replace')
+    reps = _detect(text, session_id, db_path, use_spacy, use_llm)
+    out.write_text(apply_spans(text, _finder(reps)(text)), encoding='utf-8')
     return {'entities_found': len(reps)}
 
 
-def _anon_docx(input_path, output_path, session_id, db_path,
-               use_spacy=True, use_llm=False):
-    from docx import Document
-    from core.anonymizer import anonymize_text_pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCX / PPTX (zip + XML level, every textual place)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    doc = Document(str(input_path))
-    _accept_tracked_changes(doc)
-
-    all_replacements = {}
-
-    for para in _iter_all_paras(doc):
-        if not para.text.strip():
-            continue
-        _, reps = anonymize_text_pipeline(
-            para.text, db_path, session_id,
-            use_spacy=use_spacy, use_llm=use_llm,
-        )
-        if reps:
-            all_replacements.update(reps)
-            _replace_para(para, reps)
-
-    doc.save(str(output_path))
-    return {'entities_found': len(all_replacements)}
+def _anon_office(src, out, session_id, db_path, use_spacy, use_llm):
+    from core.ooxml import Package
+    pkg = Package(src)
+    pkg.accept_revisions()
+    reps = _detect(pkg.text(), session_id, db_path, use_spacy, use_llm)
+    pkg.apply(_finder(reps))
+    pkg.scrub_metadata()
+    pkg.save(out)
+    return {'entities_found': len(reps)}
 
 
-def _deanon_docx(input_path, output_path, rev):
-    from docx import Document
+def _replace_para(para, replacements: dict):
+    """python-docx paragraph helper (kept for callers working with Document objects)."""
+    from core.ooxml import _segments
+    from core.anonymizer import replace_spans
+    for seg in _segments(para._p):
+        seg.apply(replace_spans(seg.text, replacements))
 
-    doc = Document(str(input_path))
-    _accept_tracked_changes(doc)
 
-    if rev:
-        reps = {}
-        for tok, orig in rev.items():
-            reps[f'[{tok}]'] = orig
-            reps[tok]        = orig
+# ─────────────────────────────────────────────────────────────────────────────
+# XLSX
+# ─────────────────────────────────────────────────────────────────────────────
 
-        for para in _iter_all_paras(doc):
-            _replace_para(para, reps)
+def _xlsx_cell_text(value):
+    """Text of a cell for detection; integers (INN, phones stored as numbers) included."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) >= 10**5:
+        return str(value)
+    return None
 
-    doc.save(str(output_path))
+
+def _xlsx_places(wb):
+    """(getter, setter) for every textual place of a workbook."""
+    places = []
+    for ws in wb.worksheets:
+        places.append((lambda ws=ws: ws.title, lambda v, ws=ws: setattr(ws, 'title', v[:31])))
+        for row in ws.iter_rows():
+            for c in row:
+                if _xlsx_cell_text(c.value):
+                    places.append((lambda c=c: _xlsx_cell_text(c.value),
+                                   lambda v, c=c: setattr(c, 'value', v)))
+                if c.comment:
+                    places.append((lambda c=c: c.comment.text,
+                                   lambda v, c=c: setattr(c.comment, 'text', v)))
+        for hf in (ws.oddHeader, ws.oddFooter, ws.evenHeader, ws.evenFooter,
+                   ws.firstHeader, ws.firstFooter):
+            for part in (hf.left, hf.center, hf.right):
+                if part.text:
+                    places.append((lambda p=part: p.text, lambda v, p=part: setattr(p, 'text', v)))
+    p = wb.properties
+    for attr in ('title', 'subject', 'description', 'keywords'):
+        if getattr(p, attr):
+            places.append((lambda a=attr: getattr(p, a), lambda v, a=attr: setattr(p, a, v)))
+    return places
+
+
+def _anon_xlsx(src, out, session_id, db_path, use_spacy, use_llm):
+    from openpyxl import load_workbook
+    from core.anonymizer import apply_spans
+    wb = load_workbook(str(src))
+    places = _xlsx_places(wb)
+    reps = _detect('\n'.join(g() for g, _ in places), session_id, db_path, use_spacy, use_llm)
+    find = _finder(reps)
+    for get, put in places:
+        t = get()
+        spans = find(t)
+        if spans:
+            put(apply_spans(t, spans))
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                if c.comment:
+                    c.comment.author = 'Автор'
+    wb.properties.creator = ''
+    wb.properties.lastModifiedBy = ''
+    wb.save(str(out))
+    return {'entities_found': len(reps)}
+
+
+def _deanon_xlsx(src, out, find):
+    from openpyxl import load_workbook
+    from core.anonymizer import apply_spans
+    wb = load_workbook(str(src))
+    for get, put in _xlsx_places(wb):
+        t = get()
+        spans = find(t)
+        if spans:
+            v = apply_spans(t, spans)
+            # numbers that were masked come back as numbers
+            if v.isdigit() and not v.startswith('0') and len(v) < 16:
+                v = int(v)
+            put(v)
+    wb.save(str(out))
     return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF helpers
+# PDF
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _detect_avg_fontsize(page) -> float:
@@ -260,190 +425,238 @@ def _detect_avg_fontsize(page) -> float:
     return sizes[len(sizes) // 2]
 
 
-def _find_cyrillic_font() -> str | None:
-    candidates = []
+def _find_cyrillic_font():
     if sys.platform == 'win32':
-        candidates = [r'C:\Windows\Fonts\arial.ttf',
-                      r'C:\Windows\Fonts\calibri.ttf',
+        candidates = [r'C:\Windows\Fonts\arial.ttf', r'C:\Windows\Fonts\calibri.ttf',
                       r'C:\Windows\Fonts\times.ttf']
     elif sys.platform == 'darwin':
-        candidates = ['/Library/Fonts/Arial.ttf',
-                      '/System/Library/Fonts/Supplemental/Arial.ttf']
+        candidates = ['/System/Library/Fonts/Supplemental/Arial.ttf', '/Library/Fonts/Arial.ttf',
+                      '/System/Library/Fonts/Supplemental/Times New Roman.ttf']
     else:
-        candidates = ['/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
-    return next((p for p in candidates if os.path.exists(p)), None)
+        candidates = ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf']
+    return next((p for p in candidates if Path(p).exists()), None)
 
 
-def _anon_pdf(input_path, output_path, session_id, db_path,
-              use_spacy=True, use_llm=False):
-    """
-    Extract text from PDF via PyMuPDF, anonymize, then redact in-place.
-    Output is always PDF (no pdf2docx dependency).
-    For DOCX output the user can upload the original DOCX.
-    """
-    import fitz
-    from core.anonymizer import anonymize_text_pipeline
-
-    doc = fitz.open(str(input_path))
-    all_text = '\n'.join(p.get_text() for p in doc)
-    _, reps = anonymize_text_pipeline(all_text, db_path, session_id,
-                                      use_spacy=use_spacy, use_llm=use_llm)
-
-    if reps:
-        sorted_reps = sorted(reps.items(), key=lambda x: -len(x[0]))
-        for page in doc:
-            avg_fsize = _detect_avg_fontsize(page)
-            for orig, token in sorted_reps:
-                for rect in page.search_for(orig):
-                    page.add_redact_annot(
-                        rect, text=token,
-                        fontsize=max(avg_fsize * 0.88, 7),
-                        fill=(1, 1, 1), text_color=(0, 0, 0),
-                    )
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-
-    pdf_out = output_path.with_suffix('.pdf')
-    doc.save(str(pdf_out), garbage=4, deflate=True)
-    return {'entities_found': len(reps), '_fallback_path': str(pdf_out)}
+def _page_words(page):
+    """Page text built from words + per-char word index. Lines joined by newline,
+    so values broken across lines are still one match (whitespace-tolerant)."""
+    words = page.get_text('words')
+    text, owner = [], []
+    prev = None
+    for i, w in enumerate(words):
+        key = (w[5], w[6])
+        if prev is not None:
+            # same line → space; next line of the same block (soft wrap) → space; new block → newline
+            sep = ' ' if key[0] == prev[0] else '\n'
+            text.append(sep)
+            owner.append(None)
+        text.append(w[4])
+        owner.extend([i] * len(w[4]))
+        prev = key
+    return words, ''.join(text), owner
 
 
-def _deanon_pdf(input_path, output_path, rev):
-    import fitz
-    from core.anonymizer import apply_reverse
+def _ocr_page_lines(page, dpi=200):
+    from core import ocr
+    pix = page.get_pixmap(dpi=dpi)
+    lines = ocr.recognize(pix.tobytes('png'), (pix.width, pix.height))
+    scale = page.rect.width / pix.width
+    return lines, scale
 
-    if not rev:
-        import shutil
-        shutil.copy2(str(input_path), str(output_path.with_suffix('.pdf')))
-        return {'_fallback_path': str(output_path.with_suffix('.pdf'))}
 
-    cyrillic_font = _find_cyrillic_font()
-    doc = fitz.open(str(input_path))
+def _flex(find):
+    """Make matching tolerant to line breaks / repeated spaces inside values."""
+    def wrapped(text):
+        flat = re.sub(r'[ \t\n]+', ' ', text)
+        if len(flat) == len(text):
+            return find(flat)
+        # map flat offsets back to text offsets
+        idx, j = [], 0
+        for k, ch in enumerate(text):
+            if ch in ' \t\n' and k > 0 and text[k - 1] in ' \t\n':
+                continue
+            idx.append(k)
+        idx.append(len(text))
+        return [(idx[a], idx[b - 1] + 1, v) for a, b, v in find(flat)]
+    return wrapped
 
-    search_pairs = []
-    for tok, orig in rev.items():
-        search_pairs.append((f'[{tok}]', orig))
-        search_pairs.append((tok, orig))
-    search_pairs.sort(key=lambda x: -len(x[0]))
 
+def _token_fontsize(page, token, rect, base):
+    import pymupdf
+    width = pymupdf.get_text_length(token, fontname='helv', fontsize=1) or 1
+    return max(min(base * 0.88, rect.width / width * 0.98, rect.height * 0.9), 3)
+
+
+def _anon_pdf(src, out, session_id, db_path, use_spacy, use_llm):
+    import pymupdf
+    doc = pymupdf.open(str(src))
+    pages = []
     for page in doc:
-        avg_fsize = _detect_avg_fontsize(page)
-        font_ok = False
-        if cyrillic_font:
+        words, text, owner = _page_words(page)
+        if text.strip():
+            pages.append(('text', words, text, owner, None))
+        else:
+            lines, scale = _ocr_page_lines(page)
+            pages.append(('ocr', lines, '\n'.join(l.text for l in lines), None, scale))
+
+    toc = doc.get_toc()
+    full = '\n'.join(p[2] for p in pages) + '\n' + '\n'.join(t[1] for t in toc)
+    reps = _detect(full, session_id, db_path, use_spacy, use_llm)
+    find = _flex(_finder({re.sub(r'\s+', ' ', k): v for k, v in reps.items()}))
+
+    for page, (kind, items, text, owner, scale) in zip(doc, pages):
+        base = _detect_avg_fontsize(page)
+        if kind == 'text':
+            for s, e, token in find(text):
+                idxs = sorted({owner[k] for k in range(s, e) if owner[k] is not None})
+                by_line = {}
+                for i in idxs:
+                    w = items[i]
+                    by_line.setdefault((w[5], w[6]), []).append(pymupdf.Rect(w[:4]))
+                for n, rects in enumerate(by_line.values()):
+                    r = rects[0]
+                    for x in rects[1:]:
+                        r |= x
+                    label = token if n == 0 else ''
+                    page.add_redact_annot(r, text=label, fontname='helv',
+                                          fontsize=_token_fontsize(page, token, r, base),
+                                          fill=(1, 1, 1), text_color=(0, 0, 0))
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+        else:
+            line_off = []
+            pos = 0
+            for l in items:
+                line_off.append(pos)
+                pos += len(l.text) + 1
+            for s, e, token in find(text):
+                for l, off in zip(items, line_off):
+                    a, b = max(s, off), min(e, off + len(l.text))
+                    if a >= b:
+                        continue
+                    x0, y0, x1, y1 = l.box_for(a - off, b - off)
+                    r = pymupdf.Rect(x0 * scale - 1, y0 * scale - 1, x1 * scale + 1, y1 * scale + 1)
+                    page.add_redact_annot(r, text=token if a == s else '', fontname='helv',
+                                          fontsize=_token_fontsize(page, token, r, base),
+                                          fill=(0, 0, 0), text_color=(1, 1, 1))
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+
+    from core.anonymizer import apply_spans
+    if toc:
+        doc.set_toc([[lvl, apply_spans(title, find(title)), pg] for lvl, title, pg, *_ in toc])
+    for page in doc:
+        for a in list(page.annots() or []):
+            info = a.info or {}
+            content = info.get('content') or ''
+            if content:
+                a.set_info(content=apply_spans(content, find(content)), title='Автор')
+                a.update()
+    doc.set_metadata({})
+    try:
+        doc.del_xml_metadata()
+    except Exception:
+        pass
+    doc.save(str(out), garbage=4, deflate=True, deflate_images=True)
+    return {'entities_found': len(reps), 'ocr_pages': sum(p[0] == 'ocr' for p in pages)}
+
+
+def _deanon_pdf(src, out, find):
+    import pymupdf
+    doc = pymupdf.open(str(src))
+    font = _find_cyrillic_font()
+    missing_font = False
+    for page in doc:
+        words, text, owner = _page_words(page)
+        hits = find(text)
+        if not hits:
+            continue
+        base = _detect_avg_fontsize(page)
+        todo = []
+        for s, e, orig in hits:
+            idxs = sorted({owner[k] for k in range(s, e) if owner[k] is not None})
+            if not idxs:
+                continue
+            r = pymupdf.Rect(words[idxs[0]][:4])
+            for i in idxs[1:]:
+                r |= pymupdf.Rect(words[i][:4])
+            page.add_redact_annot(r, fill=(1, 1, 1))
+            todo.append((r, orig))
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+        if not font:
+            missing_font = True
+            continue
+        page.insert_font(fontname='CyrF', fontfile=font)
+        cyr = pymupdf.Font(fontfile=font)
+        for r, orig in todo:
+            # ASCII values (phones, numbers) in Helvetica: Arial maps «-» to a soft hyphen on copy
+            ascii_only = orig.isascii()
+            fname = 'helv' if ascii_only else 'CyrF'
+            width = (pymupdf.get_text_length(orig, fontname='helv', fontsize=1) if ascii_only
+                     else cyr.text_length(orig, fontsize=1))
+            fs = max(min(base * 0.88, r.width / max(width, 0.01)), 4)
+            page.insert_text((r.x0, r.y1 - r.height * 0.2), orig, fontname=fname, fontsize=fs)
+    doc.save(str(out), garbage=4, deflate=True)
+    return {'_pdf_no_font': missing_font}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RTF (decoded with a map back to raw bytes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _anon_rtf(src, out, session_id, db_path, use_spacy, use_llm):
+    from core import rtf
+    raw = rtf.scrub_info(src.read_bytes())
+    text, _ = rtf.decode(raw)
+    reps = _detect(text, session_id, db_path, use_spacy, use_llm)
+    new, _ = rtf.apply(raw, _finder(reps))
+    out.write_bytes(new)
+    return {'entities_found': len(reps)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Images (OCR → black boxes with the token; EXIF incl. GPS dropped)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PLATE_OCR = re.compile(r'(?<![0-9A-Za-zА-Яа-я])[АВЕКМНОРСТУХABEKMHOPCTYX][ ]?\d{3}[ ]?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}(?![A-Za-zА-Яа-я])',
+                        re.IGNORECASE)
+
+
+def _anon_image(src, out, session_id, db_path, use_spacy, use_llm):
+    import io
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from core import ocr
+    if src.suffix.lower() == '.heic':
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    img = ImageOps.exif_transpose(Image.open(src)).convert('RGB')
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    lines = ocr.recognize(buf.getvalue(), img.size)
+    text = '\n'.join(l.text for l in lines)
+    reps = _detect(text, session_id, db_path, use_spacy, use_llm)
+    # Photos: the small region part of a licence plate is often misread by OCR
+    # («Н385ЕУ 777» → «H385EY ML») — the series alone is enough, mask the whole plate line
+    from core.db import get_or_create_token
+    for l in lines:
+        for m in _PLATE_OCR.finditer(l.text):
+            plate = l.text[m.start():].strip() if len(l.text) - m.start() <= 14 else m.group()
+            reps.setdefault(plate, f"[{get_or_create_token(db_path, session_id, plate, plate, 'ГОСНОМЕР')}]")
+    find = _finder(reps)
+    draw = ImageDraw.Draw(img)
+    boxes = 0
+    off = 0
+    for l in lines:
+        for s, e, token in find(l.text):
+            x0, y0, x1, y1 = l.box_for(s, e)
+            pad = max(2, (y1 - y0) * 0.15)
+            draw.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad], fill=(0, 0, 0))
             try:
-                page.insert_font(fontname='CyrF', fontfile=cyrillic_font)
-                font_ok = True
+                font = ImageFont.load_default(size=max(int((y1 - y0) * 0.8), 8))
+                draw.text((x0, y0), token, fill=(255, 255, 255), font=font)
             except Exception:
                 pass
-
-        for token_str, orig in search_pairs:
-            for rect in page.search_for(token_str):
-                page.draw_rect(rect, color=None, fill=(1, 1, 1))
-                if font_ok:
-                    try:
-                        page.insert_textbox(
-                            rect.inflate(1, 1), orig,
-                            fontname='CyrF',
-                            fontsize=max(avg_fsize * 0.88, 7),
-                            color=(0, 0, 0), align=0,
-                        )
-                    except Exception:
-                        pass
-
-    pdf_out = output_path.with_suffix('.pdf')
-    doc.save(str(pdf_out), garbage=4, deflate=True)
-    return {'_fallback_path': str(pdf_out)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# XLSX helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _xlsx_cell_text(value):
-    """Text of a cell for detection; integers (INN, phones stored as numbers) included."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, int) and not isinstance(value, bool) and abs(value) >= 10**5:
-        return str(value)
-    return None
-
-
-def _anon_xlsx(input_path, output_path, session_id, db_path,
-               use_spacy=True, use_llm=False):
-    from openpyxl import load_workbook
-    from core.anonymizer import anonymize_text_pipeline, replace_bounded
-
-    wb = load_workbook(str(input_path))
-    all_text = '\n'.join(
-        t for ws in wb.worksheets
-        for row in ws.iter_rows() for cell in row
-        for t in [_xlsx_cell_text(cell.value)] if t and t.strip()
-    )
-    _, reps = anonymize_text_pipeline(all_text, db_path, session_id,
-                                      use_spacy=use_spacy, use_llm=use_llm)
-
-    if reps:
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for cell in row:
-                    t = _xlsx_cell_text(cell.value)
-                    if t:
-                        new = replace_bounded(t, reps)
-                        if new != t:
-                            cell.value = new
-
-    wb.save(str(output_path))
-    return {'entities_found': len(reps)}
-
-
-def _deanon_xlsx(input_path, output_path, rev):
-    from openpyxl import load_workbook
-    from core.anonymizer import apply_reverse
-
-    wb = load_workbook(str(input_path))
-    if rev:
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for cell in row:
-                    if isinstance(cell.value, str):
-                        restored = apply_reverse(cell.value, rev)
-                        # numbers that were masked come back as numbers
-                        if restored != cell.value and restored.isdigit() and not restored.startswith('0'):
-                            restored = int(restored)
-                        cell.value = restored
-    wb.save(str(output_path))
-    return {}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# RTF helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _extract_rtf_plain(filepath: Path) -> str:
-    try:
-        from striprtf.striprtf import rtf_to_text
-        raw = filepath.read_bytes().decode('utf-8', errors='replace')
-        return rtf_to_text(raw)
-    except Exception:
-        return ''
-
-
-def _anon_rtf(input_path, output_path, session_id, db_path,
-              use_spacy=True, use_llm=False):
-    from core.anonymizer import anonymize_text_pipeline
-
-    plain   = _extract_rtf_plain(input_path)
-    _, reps = anonymize_text_pipeline(plain, db_path, session_id,
-                                      use_spacy=use_spacy, use_llm=use_llm)
-    raw        = input_path.read_bytes().decode('utf-8', errors='replace')
-    for orig, tok in sorted(reps.items(), key=lambda x: -len(x[0])):
-        raw = raw.replace(orig, tok)
-    output_path.write_text(raw, encoding='utf-8')
-    return {'entities_found': len(reps)}
-
-
-def _deanon_rtf(input_path, output_path, rev):
-    from core.anonymizer import apply_reverse
-    raw = input_path.read_bytes().decode('utf-8', errors='replace')
-    output_path.write_text(apply_reverse(raw, rev), encoding='utf-8')
-    return {}
+            boxes += 1
+        off += len(l.text) + 1
+    fmt = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.tif': 'TIFF', '.tiff': 'TIFF'}.get(out.suffix.lower(), 'PNG')
+    img.save(out, fmt, quality=92) if fmt == 'JPEG' else img.save(out, fmt)
+    return {'entities_found': len(reps), 'boxes': boxes}

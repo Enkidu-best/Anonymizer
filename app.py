@@ -1,10 +1,13 @@
 """
-Anonymizer — Flask backend
-Run:  python app.py
-Then open http://localhost:5000 in your browser.
+Anonymizer — Flask backend + native window.
+
+    python app.py             native window (pywebview), falls back to the browser
+    python app.py --browser   open in the default browser
+    python app.py --server    server only (prints the URL; used by tests and checks)
 """
 
 import io
+import json
 import os
 import sys
 import shutil
@@ -18,9 +21,18 @@ from core.version import __version__ as APP_VERSION
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
 # ── Path resolution (works both in development and PyInstaller bundle) ────────
+def _user_data_dir() -> Path:
+    """Per-user writable folder; never next to the program (a .app bundle is read-only)."""
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / 'Anonymizer'
+    if sys.platform == 'win32':
+        return Path(os.environ.get('APPDATA', Path.home())) / 'Anonymizer'
+    return Path.home() / '.local' / 'share' / 'Anonymizer'
+
+
 if getattr(sys, 'frozen', False):
     BUNDLE_DIR = Path(sys._MEIPASS)
-    DATA_DIR   = Path(sys.executable).parent
+    DATA_DIR   = _user_data_dir()
 else:
     BUNDLE_DIR = Path(__file__).parent
     DATA_DIR   = Path(__file__).parent
@@ -34,7 +46,24 @@ STATIC_DIR  = BUNDLE_DIR / 'static'
 UPLOADS_DIR = DATA_DIR   / 'uploads'
 DB_PATH     = DATA_DIR   / 'anon.db'
 
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
+UPLOAD_RETENTION_DAYS = int(os.environ.get('ANONYMIZER_RETENTION_DAYS', '30'))
+
+
+def _purge_old_uploads():
+    """Originals are personal data: delete session upload folders older than N days."""
+    import time
+    limit = time.time() - UPLOAD_RETENTION_DAYS * 86400
+    for d in UPLOADS_DIR.iterdir():
+        try:
+            if d.is_dir() and d.stat().st_mtime < limit:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
+_purge_old_uploads()
 
 # ── DB init ───────────────────────────────────────────────────────────────────
 from core.db import init_db
@@ -54,6 +83,27 @@ except Exception as _ex:
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+PORT = None   # set at launch
+
+
+@app.before_request
+def _local_only():
+    """Only the app's own page may talk to the server: a web page opened in any
+    browser could otherwise POST to 127.0.0.1 (delete sessions, read mappings).
+    Host check also defeats DNS rebinding."""
+    host = (request.host or '').split(':')[0]
+    if host not in ('127.0.0.1', 'localhost'):
+        return jsonify({'error': 'forbidden host'}), 403
+    origin = request.headers.get('Origin')
+    if origin and origin != 'null':
+        from urllib.parse import urlparse
+        o = urlparse(origin)
+        if o.hostname not in ('127.0.0.1', 'localhost') or (PORT and o.port != PORT):
+            return jsonify({'error': 'forbidden origin'}), 403
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        site = request.headers.get('Sec-Fetch-Site')
+        if site and site not in ('same-origin', 'none'):
+            return jsonify({'error': 'cross-site request'}), 403
 
 
 # ── Static files & SPA ───────────────────────────────────────────────────────
@@ -240,6 +290,20 @@ def add_mapping_route(sid):
 
 
 
+def _manifest(session_dir: Path) -> dict:
+    try:
+        return json.loads((session_dir / 'manifest.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _remember_output(session_dir: Path, input_name: str, mode: str, output_name: str):
+    """input file → output file per mode (output names are anonymized, not derived from input)."""
+    m = _manifest(session_dir)
+    m.setdefault(input_name, {})[mode] = output_name
+    (session_dir / 'manifest.json').write_text(json.dumps(m, ensure_ascii=False), encoding='utf-8')
+
+
 # ── Reprocess after manual edits ──────────────────────────────────────────────
 @app.route('/api/sessions/<sid>/reprocess', methods=['POST'])
 def reprocess_session(sid):
@@ -253,8 +317,15 @@ def reprocess_session(sid):
         return jsonify({'error': 'Оригинальные файлы не найдены'}), 404
 
     results = []
+    man = _manifest(session_dir)
     for input_file in input_dir.iterdir():
+        if man.get(input_file.name) and 'anonymize' not in man[input_file.name]:
+            continue   # uploaded for deanonymization — nothing to re-anonymize
         try:
+            # drop the previous output of this input: its name may change after edits
+            prev = _manifest(session_dir).get(input_file.name, {}).get('anonymize')
+            if prev and (output_dir / prev).exists():
+                (output_dir / prev).unlink()
             r = process_uploaded_file(
                 input_path=input_file,
                 output_dir=output_dir,
@@ -262,7 +333,9 @@ def reprocess_session(sid):
                 db_path=DB_PATH,
                 mode='anonymize',
             )
-            results.append({'filename': input_file.name, 'status': 'ok'})
+            _remember_output(session_dir, input_file.name, 'anonymize', r['output_filename'])
+            results.append({'filename': input_file.name, 'status': 'ok',
+                            'output': r['output_filename'], 'leaks': r.get('leaks')})
         except Exception as ex:
             results.append({'filename': input_file.name, 'status': 'error', 'error': str(ex)})
 
@@ -314,7 +387,8 @@ def process():
     for f in files:
         if not f.filename:
             continue
-        src = in_dir / f.filename
+        from core.handlers import safe_upload_name
+        src = in_dir / safe_upload_name(f.filename)
         f.save(str(src))
         try:
             r = process_uploaded_file(
@@ -327,10 +401,13 @@ def process():
                 use_llm=use_llm,
             )
             out_name = r['output_filename']
+            _remember_output(session_dir, src.name, mode, out_name)
             results.append({'filename': f.filename,
                              'output':   out_name,
                              'status':   'ok',
-                             'entities_found': r.get('entities_found', 0)})
+                             'entities_found': r.get('entities_found', 0),
+                             'leaks': r.get('leaks'),
+                             'note': r.get('note')})
         except Exception as ex:
             results.append({'filename': f.filename,
                              'status':  'error',
@@ -378,20 +455,17 @@ def delete_session_file(sid, filename):
         target.unlink()
     except OSError as ex:
         return jsonify({'error': str(ex)}), 500
-    # Best-effort: also remove the input file with matching stem
-    stem = filename
-    for pfx in ('anonymized_', 'deanonymized_', 'anon_', 'deanon_'):
-        if stem.lower().startswith(pfx):
-            stem = stem[len(pfx):]
-            break
-    if in_dir.exists():
-        for fp in in_dir.iterdir():
-            if fp.name == stem:
-                try:
-                    fp.unlink()
-                except OSError:
-                    pass
-                break
+    # Also remove the input file this output was made from
+    session_dir = UPLOADS_DIR / sid
+    man = _manifest(session_dir)
+    for inp, outs in list(man.items()):
+        if filename in outs.values():
+            try:
+                (in_dir / inp).unlink()
+            except OSError:
+                pass
+            man.pop(inp, None)
+    (session_dir / 'manifest.json').write_text(json.dumps(man, ensure_ascii=False), encoding='utf-8')
     return jsonify({'ok': True})
 
 
@@ -436,15 +510,59 @@ def shutdown():
 
 
 # ── Launch ────────────────────────────────────────────────────────────────────
-def _open_browser():
+def _free_port(preferred=5000) -> int:
+    import socket
+    for port in (preferred, 0):
+        with socket.socket() as sock:
+            try:
+                sock.bind(('127.0.0.1', port))
+                return sock.getsockname()[1]
+            except OSError:
+                continue
+    return preferred
+
+
+def _serve(port):
+    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False, threaded=True)
+
+
+def main():
+    global PORT
+    PORT = int(os.environ.get('ANONYMIZER_PORT') or _free_port(5000 if not getattr(sys, 'frozen', False) else 0))
+    url = f'http://127.0.0.1:{PORT}'
+    print('Anonymizer v' + APP_VERSION)
+    print(url, flush=True)
+    print('Data:', DATA_DIR, flush=True)
+    if '--server' in sys.argv:
+        _serve(PORT)
+        return
+    if '--browser' not in sys.argv:
+        try:
+            import webview
+            webview.settings['ALLOW_DOWNLOADS'] = True
+            threading.Thread(target=_serve, args=(PORT,), daemon=True).start()
+            _wait_ready(url)
+            webview.create_window(f'Anonymizer {APP_VERSION}', url, width=1360, height=900,
+                                  min_size=(1000, 680))
+            webview.start()
+            os._exit(0)
+        except ImportError:
+            pass
+    threading.Thread(target=lambda: (_wait_ready(url), webbrowser.open(url)), daemon=True).start()
+    _serve(PORT)
+
+
+def _wait_ready(url, timeout=20):
     import time
-    time.sleep(1.2)
-    webbrowser.open('http://127.0.0.1:5000')
+    import urllib.request
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            urllib.request.urlopen(url + '/api/status', timeout=1)
+            return
+        except Exception:
+            time.sleep(0.2)
 
 
 if __name__ == '__main__':
-    t = threading.Thread(target=_open_browser, daemon=True)
-    t.start()
-    print('Anonymizer v' + APP_VERSION)
-    print('http://127.0.0.1:5000')
-    app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
+    main()

@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-TEST_FILES = ROOT / 'Тестовые_файлы'
+from tests.conftest import sample_files
+_DOCX = sample_files({'.docx'})
 
 try:
     from playwright.sync_api import sync_playwright, expect
@@ -183,9 +184,9 @@ def test_ui_loads_and_shows_no_sessions_state(page):
 def test_anonymize_real_docx_via_ui_regex_only(page, server, tmp_path):
     """Bug #4 regression: full UI flow — upload a real DOCX, process,
     verify no garbage mappings (no FIO='Возглавляет', no '[YUL_1' fragments)."""
-    src = TEST_FILES / 'sample_03.docx'
-    if not src.exists():
-        pytest.skip('Sample missing')
+    if not _DOCX:
+        pytest.skip('No local DOCX samples')
+    src = _DOCX[0]
     # Copy to a path with no Cyrillic dirs (multipart edge cases)
     local = tmp_path / 'sample.docx'
     local.write_bytes(src.read_bytes())
@@ -358,9 +359,9 @@ def test_known_entities_persist_across_sessions(page, server):
 def test_no_garbage_fio_or_org_in_real_docx(page, server, tmp_path):
     """End-to-end on a sample known to produce false positives.
     After full pipeline runs, none of the listed garbage strings should appear."""
-    src = TEST_FILES / 'sample_03.docx'
-    if not src.exists():
-        pytest.skip('Sample missing')
+    if not _DOCX:
+        pytest.skip('No local DOCX samples')
+    src = _DOCX[0]
     local = tmp_path / 'snb.docx'
     local.write_bytes(src.read_bytes())
 

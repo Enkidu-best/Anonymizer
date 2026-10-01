@@ -1,4 +1,5 @@
 """Pytest fixtures shared across the anonymizer test suite."""
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -26,10 +27,20 @@ def session_id(tmp_db):
     return create_session(tmp_db, 'test-session')
 
 
+# Owner's real documents — local only, git-ignored. Override with ANONYMIZER_SAMPLES.
+SAMPLES_DIR = Path(os.environ.get('ANONYMIZER_SAMPLES', ROOT / 'Проверка распознавания текста'))
+
+
+def sample_files(exts=None):
+    if not SAMPLES_DIR.exists():
+        return []
+    return sorted(f for f in SAMPLES_DIR.iterdir()
+                  if f.is_file() and not f.name.startswith('.')
+                  and (exts is None or f.suffix.lower() in exts))
+
+
 @pytest.fixture(scope='session')
 def test_files_dir():
-    """Folder with realistic Russian DOCX/PDF samples bundled with the repo."""
-    p = ROOT / 'Тестовые_файлы'
-    if not p.exists():
-        pytest.skip(f'Test files directory missing: {p}')
-    return p
+    if not SAMPLES_DIR.exists():
+        pytest.skip(f'Local samples folder missing: {SAMPLES_DIR}')
+    return SAMPLES_DIR
