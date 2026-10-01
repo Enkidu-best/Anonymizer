@@ -1,10 +1,35 @@
-﻿venv/
+# Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+.venv*/
+venv/
+.env
+.pytest_cache/
+
+# User data — never commit (contains real PII and mapping keys)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
 uploads/
-anon.db
+--примеры/
+Тестовые_файлы/
+
+# IDE / tools
+.idea/
+.claude/
+.DS_Store
+
+# Build
 dist/
 build/
 *.spec
-.env
+!Anonymizer.spec
+
+# Bench output
+tests/bench/fails.json
+
+# Local archives
+*.zip

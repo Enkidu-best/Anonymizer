@@ -13,7 +13,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-APP_VERSION = "2.0.0"
+from core.version import __version__ as APP_VERSION
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 
@@ -24,6 +24,11 @@ if getattr(sys, 'frozen', False):
 else:
     BUNDLE_DIR = Path(__file__).parent
     DATA_DIR   = Path(__file__).parent
+
+# Override for tests / custom installs
+if os.environ.get('ANONYMIZER_DATA_DIR'):
+    DATA_DIR = Path(os.environ['ANONYMIZER_DATA_DIR'])
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 STATIC_DIR  = BUNDLE_DIR / 'static'
 UPLOADS_DIR = DATA_DIR   / 'uploads'

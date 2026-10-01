@@ -1,78 +1,62 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. The development plan and working rules live in [CLAUDE_CODE_TASK.md](CLAUDE_CODE_TASK.md); detection rules per PII type live in [docs/PII_VARIANTS_CATALOG.md](docs/PII_VARIANTS_CATALOG.md). Read both before changing detection logic.
 
-## Project Overview
+## Project
 
-Anonymizer is a **local-only** Russian-language document PII redaction tool (ФЗ-152 compliance). It detects and replaces sensitive entities with `[TYPE_N]` tokens (e.g., `[FIO_1]`, `[INN_2]`) and supports deanonymization (token → original value). No internet required; all processing is on-device.
+Local-only PII anonymizer/deanonymizer for Russian legal documents (152-FZ, banking and trade secrets). Flask backend + single-page frontend, packaged with PyInstaller. Formats: TXT, DOCX, PDF (text layer only), XLSX, RTF. The owner is a lawyer: talk to them in Russian, briefly, with results and what was verified.
 
-## Development Commands
+Main metric is **recall**: a missed name leaks abroad, an extra mask only slightly hurts analysis.
+
+## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run dev server (opens browser automatically at http://127.0.0.1:5000)
-python app.py
-
-# Build Windows executable
-build_windows.bat
-
-# Build macOS executable
-./build_macos.sh
+python3.12 -m venv .venv312 && .venv312/bin/pip install -r requirements-dev.txt   # Python 3.12
+python app.py                          # opens http://127.0.0.1:5000
+python -m pytest -q                    # unit + format tests (UI tests need `playwright install chromium`)
+python tests/bench/run.py              # recall bench, 200 variants, regex only
+python tests/bench/run.py --ner        # same with spaCy
+./build_macos.sh / build_windows.bat   # PyInstaller build
 ```
 
-Requires **Python 3.11–3.12** — numpy 1.x is incompatible with Python 3.13+.
+Debug endpoints: `/api/status`, `/api/debug`, `/api/llm-status`.
 
-On first run, Natasha NER model downloads ~220 MB to `~/.natasha` in a background thread. The server is immediately usable for structured-data (INN, phone, etc.) processing before NER finishes loading.
+## Working rules (from CLAUDE_CODE_TASK.md §0)
 
-## Architecture
+- Test first: add a failing case to `tests/bench/corpus.py` or `tests/test_*.py`, then fix.
+- After every change: pytest green, bench % not lower than the last CHANGELOG entry, **FP = 0, RT = 0**, live check through the running app.
+- Record each stage in `CHANGELOG.md` (what changed, bench before/after, what was checked by hand).
+- No fixes via lists of specific words/names from the owner's documents — use morphology, checksums, context. Stop lists only for generic categories.
+- Never commit real documents, `anon.db*`, `uploads/`, real names/addresses/requisites. Test data must be fictional, generated with `tests/bench/ids.py` (valid checksums).
+- No force-push, history rewrite, deleting owner files or changing repo visibility without the owner's explicit "да".
 
-### Processing Pipeline (`core/anonymizer.py`)
+## Architecture (v2.3)
 
-Four sequential passes, each operating on non-overlapping spans:
+### Pipeline
+`anonymize_text_pipeline(text, db_path, session_id, use_spacy, use_llm)` in [core/anonymizer.py](core/anonymizer.py) is the single entry point. Passes run in order; each sees text with earlier `[TOKEN]` placeholders already inserted and skips them (`TOKEN_INNER_RE`, `PARTIAL_TOKEN_RE`):
 
-1. **OPF Regex** — Russian legal entity forms (ООО, АО, ПАО, etc.) with full case inflections; extracts org names from quoted patterns
-2. **Structured Regex** — INN (10/12-digit), OGRN, КПП, bank accounts, БИК, СНИЛС, passports, phones, emails, SWIFT, addresses
-3. **Natasha NER** — PER/ORG entity recognition loaded asynchronously at startup; FIO candidates pass a 3-layer validation filter (initials pattern → patronymic suffix → pymorphy2 morphtags)
-4. **LLM via Ollama** (optional) — Document-level extraction using local model (mistral-nemo, qwen2.5, etc.); one call per document to avoid timeout multiplication
+0. `_apply_global_known` — values remembered from earlier sessions (`known_entities`).
+1. `_apply_opf_pass` — legal form + quoted name; only the name is masked (`ООО «X»` → `ООО «[YUL_1]»`).
+2. `_apply_regex_pass` — INN, OGRN, KPP, accounts, BIK, SNILS, passport, phone, email, dates of birth, addresses, regex FIO.
+3. `_apply_spacy_pass` — spaCy `ru_core_news_lg` PER/ORG, filtered by `_validate_spacy_fio` / `_validate_spacy_org`; names normalized with pymorphy3 (`_normalize_fio`).
+4. `core/llm.py: apply_llm_pass` — optional Ollama call.
+5. `_apply_known_entities` — re-applies mappings already in the session.
 
-Main entry: `anonymize_text_sequential(text, db_path, session_id, use_llm, use_regex_ner)`
+Each pass returns `(new_text, {original: "[TOKEN]"})`; the merged dict is what format handlers apply. Exclusions (`exclusions` table) are honoured by every pass.
 
-### Session & Storage (`core/db.py`)
+NER loads on a background thread (`start_ner_loading`); UI polls `/api/status` and works regex-only meanwhile.
 
-SQLite (`anon.db`, WAL mode). Two tables:
-- `sessions` — UUID id, name, created_at
-- `mappings` — `(session_id, canonical_form, entity_type)` UNIQUE; token auto-increments per type within a session
+### Format handlers
+[core/handlers.py](core/handlers.py): `process_uploaded_file` → `_anon_<fmt>` / `_deanon_<fmt>`. Handlers extract text, run the pipeline to build the replacement dict, then apply it element by element (DOCX paragraph incl. tables/headers/footers with run-aware `_replace_para`, XLSX string cells, PDF redaction rects, RTF raw text) to keep formatting. DOCX tracked changes are accepted first. Known gaps are listed in CLAUDE_CODE_TASK.md §2.3 (items 21-25).
 
-`get_or_create_token()` enforces idempotency — same entity always gets the same token within a session.
+### Tokens and DB
+[core/db.py](core/db.py), SQLite. Tokens are ASCII `[FIO_1]`, `[YUL_2]`… (`_PREFIX` maps Russian entity types to prefixes; ASCII keeps PDF insertion safe). Numbering per session and prefix = `MAX+1`. `mappings` is UNIQUE on `(session_id, original_form, entity_type)`; `get_reverse_mappings` feeds `apply_reverse`. Other tables: `sessions`, `exclusions`, `known_entities`, `user_patterns`.
 
-### Format Handlers (`core/handlers.py`)
+### Paths
+[app.py](app.py) splits `BUNDLE_DIR` (read-only, PyInstaller `_MEIPASS`) from `DATA_DIR` (writable; holds `anon.db`, `uploads/`). Never write to `BUNDLE_DIR`. Moving data to Application Support / %APPDATA% is planned (stage 8).
 
-Dispatches by file extension: TXT, DOCX, PDF, XLSX, RTF.
+### Version
+Single source: [core/version.py](core/version.py). Shown in the UI via `/api/status`.
 
-- **DOCX**: XML-level tracked-change acceptance before processing; per-run and cross-run replacement; iterates body, tables, headers, footers
-- **PDF**: Always converted to DOCX via `pdf2docx` for anonymization (preserves deanon fidelity); falls back to `.txt` if system fonts are unavailable. Scanned PDFs are rejected (no OCR).
-- **XLSX**: Cell-level replacement with formatting preservation
-- **RTF**: Raw string replacement (complex RTFs may lose formatting)
-
-### LLM Client (`core/llm.py`)
-
-Connects to Ollama at `localhost:11434`. `try_start_ollama()` auto-spawns the daemon on Windows/macOS/Linux. Text is chunked at 3000 chars, temperature=0, 120 s timeout. Progress tracked in a global `_llm_progress` dict, polled by frontend via `GET /api/llm-progress`.
-
-### Web App (`app.py` + `static/index.html`)
-
-Flask server on `127.0.0.1:5000`. `static/index.html` is a single-page app with embedded CSS and JS (no build step, no bundler). Key API groups:
-- `POST /api/process` — upload + anonymize/deanonymize (multipart); returns results + mappings
-- `GET|POST|DELETE /api/sessions` and `/api/sessions/<sid>/mappings` — session/mapping CRUD
-- `GET /api/status`, `POST /api/ner-retry` — NER lifecycle
-- `GET /api/llm-status`, `POST /api/llm-start`, `POST /api/llm-model` — Ollama control
-- `GET /api/download/<sid>/<file>`, `GET /api/download-all/<sid>` — file retrieval
-
-## Key Implementation Details
-
-- **Token format**: `[TYPE_N]` where TYPE is an ASCII prefix (FIO, YUL, INN, OGRN, KPP, RS, KS, BIK, SNILS, PASSPORT, TEL, EMAIL, SWIFT, ADR, DOB, LIC, URL). ASCII-safe for binary formats.
-- **FIO normalization**: Natasha normalizes to nominative case; deanonymized FIOs may differ from original inflected forms — this is a known limitation.
-- **pkg_resources polyfill**: `core/anonymizer.py` replaces `pkg_resources` for pymorphy2 under PyInstaller + Python 3.12+ (setuptools entry_points failure workaround).
-- **PyInstaller build**: Hidden imports explicitly listed in `build_windows.bat`/`build_macos.sh` and `Anonymizer.spec`; `static/` and `core/` embedded via `--add-data`. The app detects frozen state via `sys.frozen` to resolve paths correctly.
-- **Uploads directory**: `uploads/<session_id>/input/` and `uploads/<session_id>/output/` created per session; deleted on session deletion.
+### Frontend
+Single file [static/index.html](static/index.html), no build step.

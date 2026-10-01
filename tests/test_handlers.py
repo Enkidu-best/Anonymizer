@@ -36,13 +36,13 @@ def _read_docx_plain(path):
 
 
 @pytest.mark.parametrize('filename', [
-    'Агентский_договор_ТЕСТ_24.03.2026.docx',
-    'Анализ фин состояния ООО ТСТ. ООО ТЕСТКОМ. ООО ТЕСТКОМ ЮГ. 17.02.26.docx',
-    'Аналитическая справка АО Полярный Торговый Банк.docx',
-    'ДКП 100% долей Ромашка-Экспо.docx',
-    'План восстановления компаний 20.01.26.docx',
-    'Решение РЭ-ТСТ.docx_распознан.docx',
-    'Решение_Ромашка_Экспо_новый_директор.docx',
+    'sample_01.docx',
+    'sample_02.docx',
+    'sample_03.docx',
+    'sample_04.docx',
+    'sample_05.docx',
+    'sample_06.docx',
+    'sample_07.docx',
 ])
 def test_anonymize_real_docx_regex_only(test_files_dir, tmp_path, tmp_db, session_id, filename):
     """Process each sample in regex-only mode and verify output integrity."""
@@ -88,7 +88,7 @@ def test_anonymize_real_docx_regex_only(test_files_dir, tmp_path, tmp_db, sessio
 def test_no_mapping_captures_masked_content(test_files_dir, tmp_path, tmp_db, session_id):
     """After processing a sample, no mapping should store text containing [TYPE_N]."""
     from core.anonymizer import _contains_token
-    src = test_files_dir / 'ДКП 100% долей Ромашка-Экспо.docx'
+    src = test_files_dir / 'sample_04.docx'
     if not src.exists():
         pytest.skip('Sample missing')
 
@@ -107,7 +107,7 @@ def test_no_mapping_captures_masked_content(test_files_dir, tmp_path, tmp_db, se
 
 def test_deanonymize_roundtrip_docx(test_files_dir, tmp_path, tmp_db, session_id):
     """Anonymize then deanonymize a DOCX — PII should reappear in output."""
-    src = test_files_dir / 'ДКП 100% долей Ромашка-Экспо.docx'
+    src = test_files_dir / 'sample_04.docx'
     if not src.exists():
         pytest.skip('Sample missing')
 
@@ -135,7 +135,7 @@ def test_deanonymize_roundtrip_docx(test_files_dir, tmp_path, tmp_db, session_id
 
 def test_session_files_endpoint_lists_output(test_files_dir, tmp_path, tmp_db, session_id):
     """Smoke test: after processing, an output file exists on disk in expected layout."""
-    src = test_files_dir / 'ДКП 100% долей Ромашка-Экспо.docx'
+    src = test_files_dir / 'sample_04.docx'
     if not src.exists():
         pytest.skip('Sample missing')
 
