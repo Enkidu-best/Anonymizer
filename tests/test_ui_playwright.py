@@ -562,3 +562,51 @@ def test_duplicates_section_and_pptx_hint(page, server, tmp_path):
     row = page.locator('.file-row.ok', has_text='.pptx')
     assert row.locator('.btn-pv').count() == 0
     assert 'просмотр недоступен' in row.inner_text()
+
+
+def test_redo_in_other_mode_keeps_manual_edits(page, server, tmp_path):
+    """Task 3, §6.3: after «Быстро» the same file can be processed in «Точно» (warning shown);
+    manual additions and «не маскировать» survive."""
+    sid = _make_session(page, 'Повтор')
+    _upload_file_path(page, _contract_docx(tmp_path / 'c.docx'))
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    page.evaluate('''async (sid) => {
+        await fetch(`/api/sessions/${sid}/mappings`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({original_form: 'Златогорье', entity_type: 'ЮЛ'})});
+        const ms = await (await fetch(`/api/sessions/${sid}/mappings`)).json();
+        const inn = ms.find(m => m.entity_type === 'ИНН');
+        await fetch(`/api/sessions/${sid}/mappings/${inn.token}`, {method: 'DELETE'});
+        await loadMappings();
+    }''', sid)
+    assert page.is_disabled('#procBtn')
+    page.click('#pm2')                       # «Точно»
+    assert not page.is_disabled('#procBtn')
+    page.click('#procBtn')
+    page.wait_for_selector('#modalOverlay:not(.hidden)')
+    assert 'ручные правки' in page.inner_text('#modalSub')
+    page.click('#modalOkBtn')
+    page.wait_for_function("S.files[0].status === 'ok' && S.files[0].engine === 'accurate'", timeout=60000)
+    ms = page.evaluate('async (sid) => (await (await fetch(`/api/sessions/${sid}/mappings`)).json())', sid)
+    vals = {m['original_form'] for m in ms}
+    assert 'Златогорье' in vals and '7707083893' not in vals
+
+
+def test_bulk_delete_sessions_and_menu(page, server):
+    for i in range(3):
+        page.evaluate("async (n) => fetch('/api/sessions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: n})})", f'Удалить {i}')
+    page.evaluate('loadSessions()')
+    page.wait_for_selector('#sessAll')
+    page.check('#sessAll')
+    page.click('.sess-bulk button.danger')
+    page.wait_for_selector('#modalOverlay:not(.hidden)')
+    assert 'Удалить 3 сессии' in page.inner_text('#modalTitle')
+    page.click('#modalOkBtn')
+    page.wait_for_function("S.sessions.length === 0")
+    # menu: diagnostics renamed, recent jobs open
+    page.click('.menu-wrap .btn-exit')
+    assert 'Режим диагностики (пишет данные в файл)' in page.inner_text('#appMenu')
+    page.click('#appMenu button:has-text("Последние задачи")')
+    page.wait_for_selector('#jobsOverlay:not(.hidden)')
+    # the edit form has multi-line fields
+    assert page.evaluate("document.getElementById('editMapOriginal').tagName") == 'TEXTAREA'

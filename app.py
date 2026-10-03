@@ -228,7 +228,11 @@ def llm_set_model():
 @app.route('/api/sessions', methods=['GET'])
 def list_sessions():
     from core.db import get_all_sessions
-    return jsonify(get_all_sessions(DB_PATH))
+    out = get_all_sessions(DB_PATH)
+    for x in out:             # files in the session folder — for «Удалить выбранные»
+        d = UPLOADS_DIR / x['id'] / 'output'
+        x['file_count'] = sum(1 for f in d.iterdir() if f.is_file()) if d.exists() else 0
+    return jsonify(out)
 
 
 @app.route('/api/sessions', methods=['POST'])
@@ -499,7 +503,8 @@ def process():
         try:
             # file number in the request, type and size only — the name may contain a company name
             with journal.Job(mode, session=sid[:8], file_no=n, ext=src.suffix.lower(),
-                             size_kb=round(src.stat().st_size / 1024), spacy=use_spacy, llm=use_llm) as job:
+                             size_kb=round(src.stat().st_size / 1024), spacy=use_spacy, llm=use_llm,
+                             engine=engine if mode == 'anonymize' else None) as job:
                 r = process_uploaded_file(
                     input_path=src,
                     output_dir=out_dir,
@@ -835,6 +840,13 @@ def download_file(sid, filename):
 def logs_info():
     return jsonify({'dir': str(journal.LOG_DIR), 'verbose': journal.VERBOSE,
                     'stale_jobs': journal.stale_jobs()})
+
+
+@app.route('/api/jobs/recent')
+def recent_jobs():
+    """«Последние задачи»: the last 20 jobs — time, file type, mode, duration, status.
+    No file names and no values (the journal has none)."""
+    return jsonify(journal.recent_jobs(20))
 
 
 @app.route('/api/logs/open', methods=['POST'])

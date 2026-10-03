@@ -219,6 +219,27 @@ def _mark_interrupted():
             continue
 
 
+def recent_jobs(n: int = 20) -> list:
+    """The last n jobs, newest first: started, kind, ext, engine, seconds, status
+    (done / error / stale / running / interrupted)."""
+    if LOG_DIR is None:
+        return []
+    rows, now = [], time.time()
+    for f in (LOG_DIR / 'jobs').glob('*.json'):
+        try:
+            d = json.loads(f.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        st = d.get('status')
+        if st == 'running' and now - d.get('updated', now) > STALE_S:
+            st = 'stale'
+        info = d.get('info') or {}
+        rows.append({'started': d.get('started'), 'kind': d.get('kind'), 'ext': info.get('ext'),
+                     'engine': info.get('engine'), 'seconds': d.get('seconds'), 'status': st})
+    rows.sort(key=lambda r: -(r['started'] or 0))
+    return rows[:n]
+
+
 def stale_jobs() -> list:
     """Running jobs without a heartbeat for more than STALE_S seconds (shown as «зависла»)."""
     out = []

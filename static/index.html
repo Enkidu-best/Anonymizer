@@ -245,7 +245,8 @@ table{width:100%;border-collapse:collapse}
 th{background:var(--card2);padding:8px 13px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:8px 13px;font-size:12px;border-bottom:1px solid var(--border)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:var(--card2)}
+.tbl-wrap tr:hover td{background:rgba(79,110,247,.10)}
+#pvBody tr:hover td,.pv-sheet tr:hover td{background:inherit}
 .td-token{font-family:'SF Mono','Fira Code','Consolas',monospace;font-weight:700;color:var(--primary)}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.4px}
 .t-FIO{background:rgba(79,110,247,.15);color:#818cf8}
@@ -303,6 +304,13 @@ tr:hover td{background:var(--card2)}
 .tok.cur{outline:2px solid var(--primary)}
 .ico{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;vertical-align:-3px;margin-right:3px}
 .pv-na{font-size:11.5px;color:var(--text3);margin-right:6px}
+.modal-ta{resize:vertical;min-height:44px;font-family:var(--font);line-height:1.4}
+.sess-chk{margin-right:6px;accent-color:var(--primary)}
+.sess-bulk{display:flex;gap:8px;align-items:center;padding:6px 12px;font-size:12px;color:var(--text2)}
+.sess-bulk button{font-size:12px;padding:3px 9px;border-radius:6px;border:1px solid var(--border2);background:var(--card);color:var(--text2);cursor:pointer}
+.sess-bulk button.danger{border-color:var(--danger);color:#fca5a5}
+.jobs-tbl td,.jobs-tbl th{padding:5px 8px;font-size:12px}
+.pm-btn small{font-weight:400;opacity:.7;font-size:10.5px}
 .pv-tab{padding:5px 11px;border-radius:var(--r2);border:1px solid var(--border2);background:var(--card2);color:var(--text2);font-size:12px;cursor:pointer}
 .pv-tab.on{border-color:var(--primary);color:var(--text)}
 .pv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.65;color:#1f2937;background:#fff;max-width:900px;margin:0 auto;padding:40px 48px;box-shadow:0 2px 10px rgba(0,0,0,.15)}
@@ -404,7 +412,8 @@ tr:hover td{background:var(--card2)}
     <button class="btn-exit" onclick="toggleMenu(event)" title="Журнал и архив">⋯</button>
     <div class="menu hidden" id="appMenu">
       <button onclick="openLogs()">Открыть папку журналов</button>
-      <button onclick="toggleVerbose()" id="verboseBtn">📝 Подробный журнал: выкл</button>
+      <button onclick="openJobs()">Последние задачи</button>
+      <button onclick="toggleVerbose()" id="verboseBtn" title="Для разбора сложного случая: в отдельный файл журнала пишутся фрагменты текста и значения. На работу программы не влияет. Выключается сам при перезапуске.">Режим диагностики (пишет данные в файл): выкл</button>
       <button onclick="toggleArchive()" id="archiveBtn">Показать архив записей</button>
       <button onclick="openSettings()">Настройки…</button>
     </div>
@@ -443,11 +452,11 @@ tr:hover td{background:var(--card2)}
       <!-- PROCESSING MODE: 3-way toggle -->
       <div class="proc-mode-row" id="procModeRow">
         <button class="pm-btn active" id="pm1" onclick="setProcMode('regex_spacy')"
-          title="Правила: регулярные выражения, контрольные суммы, словари, морфология, spaCy">Быстро</button>
+          title="Правила: регулярные выражения, контрольные суммы, словари, морфология, spaCy">Быстро <small>(правила + spaCy)</small></button>
         <button class="pm-btn" id="pm2" onclick="setProcMode('regex_spacy_llm')"
-          title="Быстро + проверка локальной нейросетью (Qwen через Ollama) в фоне">Точно</button>
+          title="Быстро + проверка локальной нейросетью (Qwen через Ollama) в фоне">Точно <small>(+ нейросеть)</small></button>
         <button class="pm-btn" id="pm3" onclick="setProcMode('llm_only')"
-          title="Только нейросеть — для проверки её качества">Только нейросеть</button>
+          title="Только нейросеть — для проверки её качества">Только нейросеть <small>(Qwen)</small></button>
       </div>
       <div class="pm-hint" id="pmHint"></div>
       <!-- LLM PANEL -->
@@ -554,6 +563,16 @@ tr:hover td{background:var(--card2)}
 
 <div id="toasts"></div>
 
+<!-- RECENT JOBS -->
+<div class="modal-overlay hidden" id="jobsOverlay" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="modal" style="max-width:640px">
+    <h3>Последние задачи</h3>
+    <p class="modal-sub">20 последних обработок. Имена файлов и значения сюда не попадают.</p>
+    <div id="jobsBody" style="max-height:60vh;overflow:auto"></div>
+    <div class="modal-btns" style="margin-top:14px"><button class="btn-modal-ok" onclick="$('jobsOverlay').classList.add('hidden')">Закрыть</button></div>
+  </div>
+</div>
+
 <!-- SETTINGS -->
 <div class="modal-overlay hidden" id="setOverlay">
   <div class="modal" style="max-width:520px">
@@ -619,9 +638,9 @@ tr:hover td{background:var(--card2)}
     <h3 id="editMapTitle"></h3>
     <div class="modal-token-info hidden" id="editMapTokenInfo">Токен: <span id="editMapTokenVal"></span></div>
     <label class="modal-field-label" title="Текст ровно так, как встречается в документе. Возвращается при деанонимизации">Найдено в документе <span style="color:var(--text2);font-weight:400">— что подставлять обратно</span></label>
-    <input type="text" class="modal-inp" id="editMapOriginal" placeholder="Иванова Мария Петровна">
+    <textarea class="modal-inp modal-ta" id="editMapOriginal" rows="2" placeholder="Иванова Мария Петровна"></textarea>
     <label class="modal-field-label" title="Нормализованная форма, по которой группируются разные склонения. Если не уверены — оставьте равной «Найдено в документе»">Базовая форма <span style="color:var(--text2);font-weight:400">— для группировки склонений (необязательно)</span></label>
-    <input type="text" class="modal-inp" id="editMapCanonical" placeholder="Иванова Мария Петровна">
+    <textarea class="modal-inp modal-ta" id="editMapCanonical" rows="2" placeholder="Иванова Мария Петровна"></textarea>
     <label class="modal-field-label">Тип сущности</label>
     <select class="modal-inp" id="editMapType">
       <option value="ФИО">ФИО</option>
@@ -725,7 +744,7 @@ async function pollNer() {
 // ─── Processing mode 3-way toggle ────────────────────────────────────────────
 const PM_HINT = {
   regex_spacy: 'Правила (регулярные выражения, контрольные суммы, словари, морфология) + spaCy · секунды',
-  regex_spacy_llm: 'Быстро, затем локальная нейросеть (Qwen через Ollama) проверяет найденное и ищет пропущенное в фоне · до минуты; файл можно скачать сразу',
+  regex_spacy_llm: 'Быстро, затем локальная нейросеть (Qwen через Ollama) проверяет найденное и ищет пропущенное в фоне · 10-30 с; файл можно скачать сразу',
   llm_only: 'Только нейросеть, без правил — чтобы оценить её качество · медленно',
 };
 function setProcMode(mode) {
@@ -738,6 +757,7 @@ function setProcMode(mode) {
   const needsLlm = (mode === 'llm_only' || mode === 'regex_spacy_llm');
   if (needsLlm && S.mode === 'anonymize') $('llmPanel').classList.remove('hidden');
   else $('llmPanel').classList.add('hidden');
+  if (S.files) updateProcBtn();     // a processed file can be redone in the other mode
 }
 
 // ─── LLM ─────────────────────────────────────────────────────────────────────
@@ -808,9 +828,14 @@ async function loadSessions() {
 function renderSessions() {
   const el = $('sessionList');
   if (!S.sessions.length) { el.innerHTML='<div class="no-sess">Сессий пока нет.<br>Создайте первую.</div>'; return; }
-  el.innerHTML = S.sessions.map(s => `
+  S.checked = S.checked || new Set();
+  const n = [...S.checked].filter(id => S.sessions.some(s => s.id === id)).length;
+  el.innerHTML = `<div class="sess-bulk"><label><input type="checkbox" class="sess-chk" id="sessAll" ${n&&n===S.sessions.length?'checked':''}
+      onchange="toggleAllSessions(this.checked)"> Выбрать все</label>
+      ${n?`<button class="danger" onclick="deleteCheckedSessions()">Удалить выбранные (${n})</button>`:''}</div>` + S.sessions.map(s => `
     <div class="sess ${s.id===S.active?.id?'active':''}" onclick="selectSession('${s.id}')">
       <div class="sess-name">
+        <input type="checkbox" class="sess-chk" ${S.checked.has(s.id)?'checked':''} onclick="event.stopPropagation();toggleSessionCheck('${s.id}',this.checked)">
         <span title="${esc(s.name)}">${esc(s.name)}</span>
         <button class="sess-del-btn" onclick="delSession(event,'${s.id}')" title="Удалить">×</button>
       </div>
@@ -911,6 +936,23 @@ async function loadSessionFiles() {
   }
 }
 
+function toggleSessionCheck(id, on){ S.checked = S.checked || new Set(); on ? S.checked.add(id) : S.checked.delete(id); renderSessions(); }
+function toggleAllSessions(on){ S.checked = new Set(on ? S.sessions.map(s => s.id) : []); renderSessions(); }
+async function deleteCheckedSessions(){
+  const ids = S.sessions.filter(s => S.checked.has(s.id));
+  const files = ids.reduce((a, s) => a + (s.file_count || 0), 0);
+  const ok = await showModal({title:`Удалить ${ids.length} ${plural(ids.length,'сессию','сессии','сессий')}?`,
+    sub:`Вместе с ними будут удалены ${files} ${plural(files,'файл','файла','файлов')} и все записи замен. Восстановить будет нельзя.`,
+    hasInput:false, okLabel:'Удалить', okDanger:true});
+  if (!ok) return;
+  for (const s of ids) {
+    try { await apiFetch(`/api/sessions/${s.id}`, {method:'DELETE'}); } catch (ex) {}
+    if (S.active?.id === s.id) { S.active = null; $('emptyState').classList.remove('hidden'); $('workArea').classList.add('hidden'); }
+  }
+  S.checked = new Set();
+  await loadSessions();
+  toast(`Удалено сессий: ${ids.length}`, 'info');
+}
 async function delSession(e, id) {
   e.stopPropagation();
   const name = S.sessions.find(s=>s.id===id)?.name||'';
@@ -1342,9 +1384,23 @@ document.addEventListener('click',()=>{const m=$('appMenu');if(m)m.classList.add
 async function openLogs(){try{const d=await apiFetch('/api/logs/open',{method:'POST'});toast('Папка журналов: '+d.dir,'info');}catch(ex){toast('Не удалось открыть: '+ex.message,'err');}}
 async function toggleVerbose(){
   const cur=(await apiFetch('/api/logs')).verbose;
-  if(!cur&&!confirm('Подробный журнал записывает фрагменты текста и значения — для разбора сложного случая. Выключится сам при перезапуске. Включить?'))return;
+  if(!cur&&!confirm('Режим диагностики записывает в файл журнала фрагменты текста и значения — для разбора сложного случая. Выключится сам при перезапуске. Включить?'))return;
   const d=await apiFetch('/api/logs/verbose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!cur})});
-  $('verboseBtn').textContent='📝 Подробный журнал: '+(d.verbose?'вкл':'выкл');
+  $('verboseBtn').textContent='Режим диагностики (пишет данные в файл): '+(d.verbose?'вкл':'выкл');
+}
+const JOB_ST={done:'готово',error:'ошибка',stale:'зависла',running:'идёт',interrupted:'прервана'};
+const JOB_KIND={anonymize:'анонимизация',deanonymize:'восстановление'};
+const JOB_ENG={fast:'Быстро',accurate:'Точно',llm_only:'Только нейросеть'};
+async function openJobs(){
+  try{
+    const rows=await apiFetch('/api/jobs/recent');
+    const h=rows.length?`<div class="tbl-wrap"><table class="jobs-tbl"><tr><th>Время</th><th>Файл</th><th>Режим</th><th>Длительность</th><th>Статус</th></tr>${rows.map(r=>
+      `<tr><td>${r.started?new Date(r.started*1000).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+       <td>${esc((r.ext||'').replace('.','').toUpperCase())}</td><td>${esc(JOB_KIND[r.kind]||r.kind||'')}${r.engine?' · '+esc(JOB_ENG[r.engine]||r.engine):''}</td>
+       <td>${r.seconds!=null?r.seconds.toFixed(1)+' с':'—'}</td><td>${esc(JOB_ST[r.status]||r.status||'')}</td></tr>`).join('')}</table></div>`
+      :'<p class="modal-sub">Задач пока нет.</p>';
+    $('jobsBody').innerHTML=h; $('jobsOverlay').classList.remove('hidden');
+  }catch(ex){toast('Не удалось прочитать журнал: '+ex.message,'err');}
 }
 async function openSettings(){
   try{
@@ -1369,7 +1425,12 @@ async function toggleArchive(){
 }
 
 function sicoFor(s){return s==='ok'?'✅':s==='err'?'❌':s==='loading'?'⏳':'';}
-function updateProcBtn(){$('procBtn').disabled=!S.files.filter(x=>x.status===null).length||!S.active;}
+function _redoable(){
+  // files already processed in another mode («Быстро» → «Точно» and back)
+  const eng = S.mode !== 'anonymize' ? null : ({regex_spacy:'fast', regex_spacy_llm:'accurate', llm_only:'llm_only'}[S.procMode] || 'fast');
+  return eng ? S.files.filter(x => x.status === 'ok' && x.engine && x.engine !== eng && x.mode === 'anonymize') : [];
+}
+function updateProcBtn(){$('procBtn').disabled=!S.active||(!S.files.filter(x=>x.status===null).length&&!_redoable().length);}
 
 // ─── Process ──────────────────────────────────────────────────────────────────
 let _llmPollTimer = null;
@@ -1387,7 +1448,15 @@ async function pollLlmProgress() {
 }
 
 async function doProcess(){
-  const pending=S.files.filter(x=>x.status===null);
+  let pending=S.files.filter(x=>x.status===null);
+  if(!pending.length&&_redoable().length&&S.active){
+    const ok=await showModal({title:'Обработать заново в другом режиме?',
+      sub:'Автоматические замены этого файла будут пересчитаны. Ваши ручные правки (добавления, удаления, изменения) сохранятся. Продолжить?',
+      hasInput:false,okLabel:'Продолжить'});
+    if(!ok)return;
+    _redoable().forEach(x=>{x.status=null;x.llm=null;});
+    pending=S.files.filter(x=>x.status===null);
+  }
   if(!pending.length||!S.active)return;
 
   S.files.forEach(x=>{if(x.status===null)x.status='loading';});
@@ -1419,7 +1488,7 @@ async function doProcess(){
     S.lastSid=d.session_id;
     d.results.forEach(r=>{
       const item=S.files.find(x=>x.file.name===r.filename&&x.status==='loading');
-      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.extra=r.extra_output||null;item.fromPdf=r.converted_from==='pdf';item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;
+      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.engine=engine;item.mode=S.mode;item.extra=r.extra_output||null;item.fromPdf=r.converted_from==='pdf';item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;
         item.restore=r.restore||null;item.applyErrors=r.apply_errors||0;
         if(r.llm_job){item.llm={id:r.llm_job,status:'running'};pollReview(item);}}
     });
