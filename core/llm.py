@@ -503,3 +503,32 @@ def process_chat_command(message: str, db_path, session_id: str) -> dict:
 
     except Exception as ex:
         return {'ok': False, 'message': str(ex)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Case of a name in new text (task 3, §2.3): ONE short request for the places the rules
+# could not decide. The answer is only the needed form per number — tens of tokens.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CASE_SYSTEM = ('Ты корректор русского языка. В каждом предложении имя человека стоит в '
+                'именительном падеже в квадратных скобках. Для каждого номера верни только это имя '
+                'в том падеже, которого требует предложение. Ничего не добавляй.')
+
+
+def choose_cases(items, timeout: int = 40) -> dict:
+    """items: [(sentence with «[Имя в именительном]», name)] → {index: form}. {} if no LLM.
+    The caller accepts a form only if it is a form of the same name (core.cases)."""
+    if not items or not _llm_available:
+        return {}
+    keys = [str(i) for i in range(1, len(items) + 1)]
+    schema = {'type': 'object', 'properties': {k: {'type': 'string'} for k in keys}, 'required': keys}
+    prompt = '\n'.join(f'{k}. {s}' for k, (s, _) in zip(keys, items))
+    try:
+        raw = _ollama_generate(prompt, _CASE_SYSTEM, timeout=timeout, schema=schema,
+                               num_predict=24 * len(items) + 16)
+        data = json.loads(raw)
+    except Exception as ex:
+        from core import log
+        log.error('llm_cases_failed', ex)
+        return {}
+    return {int(k) - 1: str(v).strip() for k, v in data.items() if k in keys and isinstance(v, str)}

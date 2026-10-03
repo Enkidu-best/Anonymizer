@@ -53,8 +53,28 @@ def surname_key(word: str) -> str:
 @lru_cache(maxsize=20000)
 def _lemma(word: str, gram: str) -> Optional[str]:
     """All dictionary forms of the word for a grammeme, joined by «|» («анне|анна»)."""
-    forms = sorted({_yo(p.normal_form) for p in _parses(word) if gram in p.tag})
+    # a first name / patronymic is singular: «Тарханов» is not «of the Тарханы» (plural of a name)
+    forms = sorted({_yo(p.normal_form) for p in _parses(word)
+                    if gram in p.tag and not (gram in ('Name', 'Patr') and 'plur' in p.tag)})
     return '|'.join(forms) or None
+
+
+_SURN_END = re.compile(r'(?:ов|ев|ёв|ин|ын|ск|цк)(?:а|у|ым|ой|ом|е|ий|ая|ого|ому|им|ую)?$|(?:ских|цких)$')
+
+
+def surname_like(word: str, others, with_initials: bool = False) -> bool:
+    """A word with a surname ending is a surname — not a first name pymorphy3 guessed for an
+    unknown word («Мизгалин» → «name Мизгалин») — when initials stand by it, or another word
+    is a real dictionary first name («Мизгалин Антон Геннадьевич»)."""
+    if not _SURN_END.search(word.lower()):
+        return False
+    if with_initials and not others:
+        return True
+    m = _morph()
+    for o in others:
+        if m and m.word_is_known(o.lower()) and _lemma(o, 'Name'):
+            return True
+    return False
 
 
 class Person(NamedTuple):
@@ -67,12 +87,14 @@ class Person(NamedTuple):
         surname = name = patr = None
         initials = re.findall(r'(?<![А-ЯЁа-яё])([А-ЯЁ])\.', text)
         words = [w for w in _WORD.findall(text) if not re.fullmatch(r'[А-ЯЁA-Z]\.', w)]
-        for w in words:
+        caps = [(w.rstrip('.')[:1].upper() + w.rstrip('.')[1:].lower()) if w.isupper() else w.rstrip('.')
+                for w in words]
+        for i, (w, cap) in enumerate(zip(words, caps)):
             w = w.rstrip('.')
-            cap = w[:1].upper() + w[1:].lower() if w.isupper() else w
             if name is not None and patr is None and _lemma(cap, 'Patr'):
                 patr = _lemma(cap, 'Patr')            # patronymic follows the first name
-            elif name is None and _lemma(cap, 'Name') and not _lemma(cap, 'Surn'):
+            elif name is None and _lemma(cap, 'Name') and not _lemma(cap, 'Surn') and \
+                    not (surname is None and surname_like(cap, caps[:i] + caps[i + 1:], bool(initials))):
                 name = _lemma(cap, 'Name')
             elif surname is None:
                 surname = surname_key(cap)

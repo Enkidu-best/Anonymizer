@@ -17,14 +17,13 @@ def test_background_review_and_apply(tmp_path, monkeypatch):
     import core.llm as llm
 
     def fake(prompt, system, timeout=90, schema=None, num_ctx=None, num_predict=2048):
-        if schema and 'items' in schema.get('properties', {}):
-            # the review list: item 1 is a role «Арендатор» wrongly found as a person
-            lines = prompt.split('\n')
-            items = [{'id': i, 'category': 'ROLE' if 'Арендатор»' in l else 'PERSON', 'same_as': None}
-                     for i, l in enumerate(lines, 1)]
-            return json.dumps({'items': items})
-        return json.dumps({'entities': [{'text': 'Агафонов', 'type': 'FIO'}]} if 'Агафонов' in prompt
-                          else {'entities': []})
+        if schema and 'drop' in schema.get('properties', {}):
+            # short answer: only changes by number — item «Арендатор» is a role, a name was missed
+            found = prompt.split('СТРОКИ:')[0].split('\n')
+            drop = [int(l.split('.')[0]) for l in found if 'Арендатор»' in l and l[:1].isdigit()]
+            add = [{'text': 'Агафонов', 'type': 'FIO'}] if 'Агафонов' in prompt.split('СТРОКИ:')[1] else []
+            return json.dumps({'drop': drop, 'merge': [], 'add': add})
+        return json.dumps({'entities': []})
     monkeypatch.setattr(llm, '_ollama_generate', fake)
     monkeypatch.setattr(llm, 'check_ollama', lambda: {'available': True})
     import core.anonymizer as A

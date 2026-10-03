@@ -1101,6 +1101,7 @@ def anonymize_text_pipeline(
     from core.db import get_exclusions
     from core import log
     exclusions = get_exclusions(db_path, session_id)
+    text_in = text
     all_reps: Dict[str, str] = {}
     job = log.current_job()
 
@@ -1140,6 +1141,7 @@ def anonymize_text_pipeline(
         run('propagate_orgs', _propagate_orgs, db_path, session_id, exclusions)
         run('propagate_surnames', _propagate_surnames, db_path, session_id, exclusions)
     run('known_session', _apply_known_entities, db_path, session_id)
+    _record_org_forms(text_in, all_reps, db_path, session_id)
     # end-of-processing check of the base: one entity written several ways → one token
     from core.db import consolidate_session
     with log.stage('consolidate'):
@@ -1149,6 +1151,46 @@ def anonymize_text_pipeline(
         all_reps = {k: merged.get(v, v) for k, v in all_reps.items()}
         text = re.sub('|'.join(map(re.escape, merged)), lambda m: merged[m.group(0)], text)
     return text, all_reps
+
+
+_FULL_TO_SHORT = [
+    (r'общест\w+\s+с\s+ограниченной', 'ООО'), (r'публичн\w+\s+акционерн', 'ПАО'),
+    (r'непубличн\w+\s+акционерн', 'НАО'), (r'закрыт\w+\s+акционерн', 'ЗАО'),
+    (r'открыт\w+\s+акционерн', 'ОАО'), (r'акционерн\w+\s+общест', 'АО'),
+    (r'автономн\w+\s+некоммерческ', 'АНО'), (r'некоммерческ\w+\s+партнерств', 'НП'),
+    (r'коммерческ\w+\s+банк', 'КБ'), (r'федеральн\w+\s+государственн\w+\s+унитарн', 'ФГУП'),
+    (r'муниципальн\w+\s+унитарн', 'МУП'), (r'государственн\w+\s+унитарн', 'ГУП'),
+]
+_OPF_BEFORE_RE = re.compile(r'(' + _OPF_SHORT + r'|' + _OPF_FULL + r')[^\S\n]*[«"“„\']?[^\S\n]*$',
+                            re.IGNORECASE | re.UNICODE)
+
+
+def short_opf(opf: str) -> str:
+    """«Общество с ограниченной ответственностью» → «ООО»; short forms as written."""
+    t = re.sub(r'\s+', ' ', opf).strip()
+    for rx, short in _FULL_TO_SHORT:
+        if re.match(rx, t, re.IGNORECASE):
+            return short
+    return t if re.fullmatch(_OPF_SHORT, t) else ''
+
+
+def _record_org_forms(text: str, reps: Dict[str, str], db_path, session_id: str):
+    """The legal form right before a company name in the document («ООО «[YUL_1]»») is kept
+    with the company: an external LLM drops it, the restore puts it back (task 3, §2.2)."""
+    from core.db import set_org_forms
+    forms = {}
+    for orig, tok in reps.items():
+        key = tok.strip('[]')
+        if not key.startswith('YUL_') or key in forms or len(orig) < 2:
+            continue
+        for m in _bounded_pattern((orig,)).finditer(text):
+            b = _OPF_BEFORE_RE.search(text[max(0, m.start() - 60):m.start()])
+            opf = short_opf(b.group(1)) if b else ''
+            if opf:
+                forms[key] = opf
+                break
+    if forms:
+        set_org_forms(db_path, session_id, forms)
 
 
 # Russian spellings an external LLM may use for token prefixes
@@ -1227,19 +1269,98 @@ def make_finder(replacements: Dict[str, str], log: list = None, places: list = N
     return find
 
 
-def make_rev_finder(db_path, session_id: str, occurrences: dict = None, file_key: str = None):
-    """find(text) → [(start, end, original)], restoring by place.
+class Restored(str):
+    """A restored value with its kind for the preview and the Word highlight (task 3, §2.4):
+    mark 'exact' — the form of this very place or a value without case (numbers, companies);
+    'case' — a name in new text, case chosen automatically."""
+    mark = 'exact'
+    highlight = False
+
+
+def _restored(value: str, mark: str, highlight: bool = False) -> Restored:
+    r = Restored(value)
+    r.mark, r.highlight = mark, highlight
+    return r
+
+
+_ORG_NOUNS = {'компания', 'общество', 'организация', 'фирма', 'банк', 'фонд', 'предприятие', 'учреждение',
+              'партнерство', 'товарищество', 'кооператив', 'группа', 'холдинг', 'корпорация', 'контрагент',
+              'ответственность', 'ассоциация', 'союз', 'агентство', 'центр', 'завод', 'концерн'}
+_OPF_WORD_RE = re.compile(r'^(?:' + _OPF_SHORT + r')$')
+
+
+def org_in_new_text(name: str, opf: str, before: str, after: str, settings: dict) -> str:
+    """A company name put into new text (task 3, §2.2): already in quotes → the name;
+    otherwise «name»; standing alone (no legal form or «компания» on the left) → «ООО «name»»."""
+    if re.search(r'[«"“„]', name):
+        return name
+    if re.search(r'[«"“„\']\**\s*$', before) and re.match(r'\s*\**[»"”“\']', after):
+        return name
+    q = f'«{name}»' if settings.get('org_quotes', 'always') == 'always' else name
+    words = re.findall(r'[А-ЯЁа-яёA-Za-z]+', before[-40:])
+    prev = words[-1] if words else ''
+    has_form = bool(prev) and (_OPF_WORD_RE.match(prev) or morph_normal(prev) in _ORG_NOUNS)
+    mode = settings.get('org_opf', 'context')
+    if has_form or not opf or mode == 'never':
+        return q
+    return f'{opf} {q}'
+
+
+def _line_window(text: str, s: int, e: int):
+    """Text left and right of a token inside its line (the same for a paragraph and a whole file)."""
+    a = text.rfind('\n', 0, s) + 1
+    b = text.find('\n', e)
+    return text[max(a, s - 120):s], text[e:(b if b >= 0 else len(text))][:60]
+
+
+def make_rev_finder(db_path, session_id: str, occurrences: dict = None, file_key: str = None,
+                    settings: dict = None):
+    """find(text) → [(start, end, Restored)], restoring by place.
 
     A place whose anonymized text is unchanged (same fingerprint) gets the exact forms
     recorded for it, whatever order or file it comes in. Other places (text written by
-    an external LLM) get the main form; persons/companies there are counted in
-    stats['check_case']. Tokens unknown to the session go to stats['unknown'].
+    an external LLM) get the main form; there a person's name is declined by the rules
+    of core/cases.py (or by one short LLM request prepared with `find.prepare(text)`) and
+    counted in stats['check_case']; a company gets quotes / legal form (task 3, §2.2).
+    Tokens unknown to the session go to stats['unknown'].
     Mappings marked «не маскировать» or replaced still restore (never deleted)."""
-    from core.db import get_reverse_info, get_places
+    from core.db import get_reverse_info, get_places, get_org_forms
+    from core import settings as user_settings
+    from core.cases import decline, target_case
+    st = settings or user_settings.get()
     info = get_reverse_info(db_path, session_id)
+    forms = get_org_forms(db_path, session_id)
     places = get_places(db_path, session_id, file_key)
     stats = {'tokens': 0, 'restored': 0, 'exact': 0, 'check_case': 0, 'unknown': []}
     used: Dict[str, int] = {}
+    llm_forms: Dict[tuple, str] = {}
+    marks: list = []
+
+    def base_name(key):
+        value, edited = info[key]
+        return value if edited else decline(value, 'nomn')
+
+    def case_at(text, s, e, depth=0):
+        """Case a name needs at [s, e): rules; «[FIO_1] и [FIO_2]» — the same case as the first."""
+        left, right = _line_window(text, s, e)
+        prev = None
+        for pm in TOKEN_LOOSE_RE.finditer(left):
+            prev = pm
+        if depth < 3 and prev is not None and re.fullmatch(r'\s*(?:и|или|,)\s*', left[prev.end():]) and \
+                _token_key(prev).startswith('FIO_'):
+            off = s - len(left)
+            c = case_at(text, off + prev.start(), off + prev.end(), depth + 1)
+            if c:
+                return c
+        return target_case(left, right)
+
+    def person(key, text, m):
+        base = base_name(key)
+        case = case_at(text, m.start(), m.end())
+        if case:
+            return decline(base, case)
+        left, right = _line_window(text, m.start(), m.end())
+        return llm_forms.get((left, key, right), base)
 
     def find(text):
         out = []
@@ -1257,17 +1378,61 @@ def make_rev_finder(db_path, session_id: str, occurrences: dict = None, file_key
             if key not in info:
                 if key not in stats['unknown']:
                     stats['unknown'].append(key)
+                marks.append(('unknown', m.group(0)))
                 continue
             value, edited = info[key]
+            mark = 'exact'
+            pfx = key.split('_')[0]
             if items and k < len(items) and items[k][0] == key:
                 value = items[k][1]            # exact form of this very place
+            elif pfx == 'FIO':
+                value, mark = person(key, text, m), 'case'
+            elif pfx == 'YUL':
+                value = org_in_new_text(value, forms.get(key, ''), text[:m.start()], text[m.end():], st)
+            if mark == 'case':
+                stats['check_case'] += 1       # new text: the case of the name was chosen
+            else:
                 stats['exact'] += 1
-            elif key.split('_')[0] in ('FIO', 'YUL', 'ADR'):
-                stats['check_case'] += 1       # new text: main form, the case may differ
             stats['restored'] += 1
-            out.append((m.start(), m.end(), value))
+            marks.append((mark, value))
+            out.append((m.start(), m.end(), _restored(value, mark, mark == 'case' and st.get('highlight_case'))))
         return out
+
+    def prepare(full_text: str):
+        """Before writing: names in new text whose case the rules can't tell → one LLM request."""
+        from core.cases import same_person_form, case_of_form
+        todo = []
+        for line in full_text.split('\n'):
+            ms = list(TOKEN_LOOSE_RE.finditer(line))
+            if not ms or place_hash(line) in places:
+                continue
+            for m in ms:
+                key = _token_key(m)
+                if not key.startswith('FIO_') or key not in info:
+                    continue
+                left, right = _line_window(line, m.start(), m.end())
+                if case_at(line, m.start(), m.end()) is None and (left, key, right) not in llm_forms:
+                    sent = left + '[' + base_name(key) + ']' + right
+                    sent = TOKEN_LOOSE_RE.sub(lambda x: info.get(_token_key(x), (x.group(0),))[0], sent)
+                    todo.append(((left, key, right), sent, base_name(key)))
+                    llm_forms[(left, key, right)] = base_name(key)
+        if not todo:
+            return 0
+        from core import llm
+        answers = llm.choose_cases([(sent, base) for _, sent, base in todo[:40]])
+        ok = 0
+        for i, (k, _, base) in enumerate(todo[:40]):
+            a = answers.get(i)
+            c = case_of_form(base, a) if a and same_person_form(base, a) else None
+            if c:
+                llm_forms[k] = decline(base, c)     # the LLM tells the case, the form is ours
+                ok += 1
+        stats['llm_cases'] = ok
+        return ok
+
     find.stats = stats
+    find.prepare = prepare
+    find.marks = marks
     return find
 
 

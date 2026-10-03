@@ -51,8 +51,10 @@ class Segment:
     def apply(self, spans: List[Tuple[int, int, str]]) -> bool:
         """Replace [s, e) with value for each non-overlapping span.
 
-        The left-most text node of a span receives the value (and keeps its
-        run formatting); the rest of the span is cut from following nodes.
+        The text node holding most of the span receives the value and keeps its run
+        formatting (first one on a tie) — a token cut by an external tool into a tiny «[»
+        run and a normal «FIO_1]» run must not make the restored name tiny (task 3, §2.1);
+        the rest of the span is cut from the other nodes.
         Spans are processed right to left so earlier offsets stay valid.
         """
         if not spans:
@@ -62,22 +64,90 @@ class Segment:
             offsets.append(pos)
             pos += len(t)
         changed = False
+        extra = {}                 # piece index → text nodes split off after it (highlight)
         for s, e, value in sorted(spans, key=lambda x: -x[0]):
             hit = [i for i, (node, t) in enumerate(self.pieces)
                    if node is not None and offsets[i] < e and offsets[i] + len(t) > s]
             if not hit:
                 continue
+
+            def overlap(i):
+                return min(e, offsets[i] + len(self.pieces[i][1])) - max(s, offsets[i])
+            best = max(hit, key=lambda i: (overlap(i), -i))
             for i in reversed(hit):
                 node = self.pieces[i][0]
                 ls = max(s - offsets[i], 0)
                 le = min(e - offsets[i], len(self.pieces[i][1]))
                 cur = node.text or ''
-                node.text = cur[:ls] + (value if i == hit[0] else '') + cur[le:]
+                if i == best and getattr(value, 'highlight', False):
+                    added = _highlight_split(node, cur, ls, le, value)
+                    if added:
+                        extra[i] = added + extra.get(i, [])
+                        continue
+                node.text = cur[:ls] + (value if i == best else '') + cur[le:]
                 if node.text != node.text.strip():
                     node.set(XML_SPACE, 'preserve')
             changed = True
-        self.pieces = [(n, (n.text or '') if n is not None else t) for n, t in self.pieces]
+        pieces = []
+        for i, (n, t) in enumerate(self.pieces):
+            pieces.append((n, (n.text or '') if n is not None else t))
+            pieces += [(x, x.text or '') for x in extra.get(i, [])]
+        self.pieces = pieces
         return changed
+
+
+def _highlight_split(node, cur: str, ls: int, le: int, value: str) -> bool:
+    """Word only: put the value into its own run — a copy of the token's run with the same
+    w:rPr plus a yellow highlight — between the text before and after it (task 3, §2.3).
+    Returns the new text nodes (value, rest) or [] when the run holds more than this one
+    text node — then the caller writes the value plainly."""
+    import copy
+    run = node.getparent()
+    if run is None or run.tag != f'{{{W}}}r' or node.tag != f'{{{W}}}t':
+        return []
+    if any(ch is not node and ch.tag != f'{{{W}}}rPr' for ch in run):
+        return []
+    parent = run.getparent()
+    idx = parent.index(run)
+    mid, tail = copy.deepcopy(run), copy.deepcopy(run)
+    rpr = mid.find(f'{{{W}}}rPr')
+    if rpr is None:
+        rpr = etree.SubElement(mid, f'{{{W}}}rPr')
+        mid.remove(rpr)
+        mid.insert(0, rpr)
+    for old in rpr.findall(f'{{{W}}}highlight'):
+        rpr.remove(old)
+    hl = etree.SubElement(rpr, f'{{{W}}}highlight')
+    hl.set(f'{{{W}}}val', 'yellow')
+    _order_rpr(rpr)
+    for r, t in ((run, cur[:ls]), (mid, str(value)), (tail, cur[le:])):
+        tn = r.find(f'{{{W}}}t')
+        tn.text = t
+        tn.set(XML_SPACE, 'preserve')
+    parent.insert(idx + 1, mid)
+    added = [mid.find(f'{{{W}}}t')]
+    if cur[le:]:
+        parent.insert(idx + 2, tail)
+        added.append(tail.find(f'{{{W}}}t'))
+    return added
+
+
+_RPR_ORDER = ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'outline',
+              'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing',
+              'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd', 'fitText',
+              'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath']
+
+
+def _order_rpr(rpr):
+    """Children of w:rPr in the order of the schema (Word rejects some misordered files)."""
+    def pos(el):
+        name = etree.QName(el).localname
+        return _RPR_ORDER.index(name) if name in _RPR_ORDER else len(_RPR_ORDER)
+    kids = sorted(list(rpr), key=pos)
+    for k in kids:
+        rpr.remove(k)
+    for k in kids:
+        rpr.append(k)
 
 
 def _own_paragraph(el, p):

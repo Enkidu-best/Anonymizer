@@ -41,9 +41,35 @@ def test_review_never_hangs_on_a_stuck_ollama(monkeypatch):
     import time as _t
     from core import llm_review
     monkeypatch.setattr(llm, 'check_ollama', lambda: {'available': True})
-    monkeypatch.setattr(llm, '_ollama_generate', lambda *a, **k: (_t.sleep(5), '{"items": []}')[1])
+    monkeypatch.setattr(llm, '_ollama_generate', lambda *a, **k: (_t.sleep(5), '{"drop": [], "merge": [], "add": []}')[1])
     maps = [{'token': 'FIO_1', 'entity_type': 'ФИО', 'original_form': 'Тарханов Глеб'}]
     t0 = _t.time()
     out = llm_review.review('Тарханов Глеб подписал.', '[FIO_1] подписал.', maps, budget_s=1)
     assert _t.time() - t0 < 2.5
     assert out['partial']
+
+
+def test_review_short_answer_is_filtered(monkeypatch):
+    """Task 3, §3: the LLM answers only changes by number; unsafe ones are dropped:
+    a name is never unmasked, two different people are never merged."""
+    import json as _j
+    from core import llm_review
+    seen = {}
+
+    def fake(prompt, system, timeout=90, schema=None, num_ctx=None, num_predict=2048):
+        seen['num_predict'] = num_predict
+        seen['schema'] = schema
+        return _j.dumps({'drop': [1, 2], 'merge': [[2, 3], [2, 4]], 'add': [{'text': 'Агафонов', 'type': 'FIO'}]})
+    monkeypatch.setattr(llm, 'check_ollama', lambda: {'available': True})
+    monkeypatch.setattr(llm, '_ollama_generate', fake)
+    maps = [{'token': 'FIO_1', 'entity_type': 'ФИО', 'original_form': 'Арендатор'},
+            {'token': 'FIO_2', 'entity_type': 'ФИО', 'original_form': 'Тарханов Глеб Игоревич'},
+            {'token': 'FIO_3', 'entity_type': 'ФИО', 'original_form': 'Тарханову Г.И.'},
+            {'token': 'FIO_4', 'entity_type': 'ФИО', 'original_form': 'Ракитина Валентина'}]
+    orig = 'Арендатор Тарханов Глеб Игоревич; Тарханову Г.И.; Ракитина Валентина; Агафонов «Соседи» тоже.'
+    masked = '[FIO_1] [FIO_2]; [FIO_3]; [FIO_4]; Агафонов «Соседи» тоже.'
+    out = llm_review.review(orig, masked, maps, budget_s=10)
+    assert [r['token'] for r in out['remove']] == ['FIO_1']
+    assert out['merge'] == [{'token': 'FIO_2', 'into': 'FIO_3'}]
+    assert out['add'] == [{'value': 'Агафонов', 'type': 'ФИО'}]
+    assert seen['num_predict'] <= 400 and 'drop' in seen['schema']['properties']

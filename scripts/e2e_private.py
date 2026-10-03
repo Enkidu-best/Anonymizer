@@ -28,6 +28,8 @@ def main():
     ap.add_argument('--only', default='', help='only files with this extension')
     ap.add_argument('--model', default='qwen3.5:9b', help='Ollama model for «Точно»')
     ap.add_argument('--llm-only', action='store_true', help='only the «Точно» mode')
+    ap.add_argument('--rewrite', action='store_true',
+                    help='only the live «someone else\'s text» check: the LLM rewrites each DOCX into a memo')
     args = ap.parse_args()
 
     work = Path(tempfile.mkdtemp(prefix='anon_e2e_private_'))
@@ -46,6 +48,8 @@ def main():
     files = sorted(f for f in Path(args.folder).iterdir()
                    if f.is_file() and f.suffix.lower() in ALLOWED_EXTENSIONS and not f.name.startswith('.')
                    and (not args.only or f.suffix.lower() == args.only))
+    if args.rewrite:
+        return _rewrite(client, files, work)
     modes = ([] if args.llm_only else [('Быстро', True, False)]) + \
         ([('Точно', True, True)] if args.llm or args.llm_only else [])
     out = ROOT / 'private' / f'audit_{datetime.date.today():%Y-%m-%d}'
@@ -98,6 +102,30 @@ def main():
     totals['errors'] += len(dup)
     print(f'\nОтчёт: {out / "report.md"}  ошибок: {totals["errors"]}')
     return 1 if totals['errors'] else 0
+
+
+def _rewrite(client, files, work):
+    """Task 3, §2.5.2: no values or names in the output, numbers only."""
+    from tests.e2e.rewrite import ollama_writer, run_rewrite
+    import core.llm as L
+    if not L.check_ollama().get('available'):
+        print('Ollama недоступна — живой вариант пропущен')
+        return 0
+    write, errors = ollama_writer(), 0
+    for n, f in enumerate(files, 1):
+        if f.suffix.lower() != '.docx':
+            continue
+        t = time.time()
+        try:
+            rep = run_rewrite(client, f, work / 'rewrite' / str(n), write)
+        except Exception as ex:
+            rep = {'errors': [f'crash:{type(ex).__name__}'], 'names': 0, 'orgs': 0, 'invented': 0}
+        errors += len(rep['errors'])
+        print(f'Записка #{n:<3} {time.time() - t:6.1f}s имён в новом тексте={rep["names"]:<3} '
+              f'организаций={rep["orgs"]:<3} выдуманных токенов={rep["invented"]:<3} '
+              f'ошибки={len(rep["errors"])} {", ".join(rep["errors"])}', flush=True)
+    print(f'Ошибок: {errors}')
+    return 1 if errors else 0
 
 
 if __name__ == '__main__':

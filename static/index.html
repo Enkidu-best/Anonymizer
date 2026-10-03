@@ -292,6 +292,15 @@ tr:hover td{background:var(--card2)}
 .tok{padding:0 5px;border-radius:5px;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .tok.orig{font-weight:600}
 .tok.flash{outline:3px solid #f59e0b}
+.rv{border-radius:4px;padding:0 2px}
+.rv-exact{background:rgba(34,197,94,.22);box-shadow:inset 0 -2px 0 #22c55e}
+.rv-case{background:rgba(250,204,21,.45);box-shadow:inset 0 -2px 0 #eab308}
+.rv-unknown{background:rgba(239,68,68,.25);box-shadow:inset 0 -2px 0 #ef4444}
+.rv.flash{outline:3px solid #f59e0b}
+.pv-side .rv{font-size:11px;font-weight:700;padding:1px 6px;white-space:nowrap;color:var(--text)}
+.pv-legend{display:flex;gap:6px;flex-wrap:wrap;font-size:12px}
+.pv-summary{font-size:12.5px;color:var(--text2);margin-left:8px}
+.pv-side{user-select:text}
 #pvBody .tok{background:#ede9fe;color:#5b21b6}
 #pvBody .t-FIO{background:#dbe4ff;color:#3346c4}#pvBody .t-YUL{background:#fdf0c4;color:#8a5a00}
 #pvBody .t-ADR{background:#ccf3ec;color:#0f766e}
@@ -380,6 +389,7 @@ tr:hover td{background:var(--card2)}
       <button onclick="openLogs()">📁 Открыть папку журналов</button>
       <button onclick="toggleVerbose()" id="verboseBtn">📝 Подробный журнал: выкл</button>
       <button onclick="toggleArchive()" id="archiveBtn">🗄 Показать архив записей</button>
+      <button onclick="openSettings()">Настройки восстановления…</button>
     </div>
   </div>
   <button class="btn-exit" onclick="doShutdown()">Завершить</button>
@@ -527,11 +537,36 @@ tr:hover td{background:var(--card2)}
 
 <div id="toasts"></div>
 
+<!-- SETTINGS -->
+<div class="modal-overlay hidden" id="setOverlay">
+  <div class="modal" style="max-width:520px">
+    <h3>Настройки восстановления</h3>
+    <p class="modal-sub">Как вставлять значения в новый текст внешней нейросети (там, где исходной формы нет).</p>
+    <label class="modal-field-label">Название организации без кавычек</label>
+    <select class="modal-inp" id="setQuotes">
+      <option value="always">Ставить кавычки «»</option>
+      <option value="keep">Оставлять как в базе</option>
+    </select>
+    <label class="modal-field-label">Организационно-правовая форма (ООО, АО…)</label>
+    <select class="modal-inp" id="setOpf">
+      <option value="context">По контексту: добавлять, если рядом её нет</option>
+      <option value="always">Всегда, если рядом её нет</option>
+      <option value="never">Не добавлять</option>
+    </select>
+    <label class="pv-chk" style="margin-top:12px"><input type="checkbox" id="setHl"> Подсветить места для проверки в файле (жёлтая заливка Word там, где падеж имени подобран автоматически)</label>
+    <div class="modal-btns" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="$('setOverlay').classList.add('hidden')">Отмена</button>
+      <button class="btn-modal-ok" onclick="saveSettings()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <!-- EDIT / ADD MAPPING MODAL -->
 <div class="pv-overlay hidden" id="pvOverlay" onclick="if(event.target===this)closePreview()">
   <div class="pv">
     <div class="pv-head">
       <h3 id="pvTitle"></h3>
+      <span id="pvSummary" class="pv-summary"></span>
       <span id="pvTabs"></span>
       <input type="search" id="pvSearch" placeholder="Поиск…" oninput="pvSearch()">
       <label class="pv-chk"><input type="checkbox" id="pvOrig" onchange="pvMarkTokens()"> исходные значения</label>
@@ -954,12 +989,16 @@ function renderFileList(){
   }).join('');
 }
 
+function plural(n,one,few,many){const a=n%10,b=n%100;return a===1&&b!==11?one:(a>=2&&a<=4&&(b<10||b>=20)?few:many);}
+function restoreSummary(r){
+  const unk=(r.unknown||[]).length, n=r.restored||0;
+  return `Восстановлено ${n} ${plural(n,'значение','значения','значений')}: ${r.exact||0} точно, ${r.check_case||0} с подбором падежа, ${unk} не найдено`;
+}
 function restoreNote(item){
   const r=item.restore; if(!r||S.mode!=='deanonymize')return '';
-  let h=`<div style="color:var(--text2)">Восстановлено: ${r.restored} из ${r.tokens}`+
-    (r.exact?` · точная форма на месте: ${r.exact}`:'')+`</div>`;
-  if(r.check_case)h+=`<div class="file-warn">Проверьте падеж в новом тексте нейросети: ${r.check_case} мест(а) — подставлена основная форма</div>`;
-  if(r.unknown&&r.unknown.length)h+=`<div class="file-err">Неизвестные токены (нет в этой сессии): ${esc(r.unknown.join(', '))} — проверьте, та ли сессия выбрана</div>`;
+  let h=`<div style="color:var(--text2)">${restoreSummary(r)}</div>`;
+  if(r.check_case)h+=`<div class="file-warn">В ${r.check_case} ${plural(r.check_case,'месте','местах','местах')} падеж имени подобран автоматически — они подсвечены жёлтым</div>`;
+  if(r.unknown&&r.unknown.length)h+=`<div class="file-err">Не найдены в этой сессии: ${esc(r.unknown.join(', '))} — проверьте, та ли сессия выбрана</div>`;
   return h;
 }
 function llmNote(item){
@@ -1007,6 +1046,9 @@ async function openPreview(sid, filename){
     $('pvDownload').href=`/api/download/${sid}/${encodeURIComponent(filename)}`;
     $('pvDownload').setAttribute('download',filename);
     $('pvSearch').value='';$('pvOrig').checked=false;
+    const R=PV.restore;
+    $('pvSummary').textContent=R?restoreSummary({restored:R.exact+R.case,exact:R.exact,check_case:R.case,unknown:new Array(R.unknown)}):'';
+    $('pvOrig').parentElement.style.display=R?'none':'';
     $('pvOverlay').classList.remove('hidden');
     renderPvSide(); await renderPvBody();
   }catch(ex){toast('Просмотр недоступен: '+ex.message,'err');}
@@ -1017,7 +1059,19 @@ function pvTab(t){PV.tab=t;renderPvBody();}
 function pvTokenCounts(){
   const c={};(PV.text||'').replace(/\[([A-Z]+_\d+)\]/g,(m,k)=>{c[k]=(c[k]||0)+1;return m;});return c;
 }
+const RV_LABEL={exact:'восстановлено точно',case:'падеж подобран автоматически',unknown:'токен не найден в сессии'};
+function renderPvSideRestored(){
+  const R=PV.restore, by={};
+  R.marks.forEach(([m,v],i)=>{const k=m+'\u0001'+v;(by[k]=by[k]||{m,v,n:0,first:i}).n++;});
+  const items=Object.values(by).sort((a,b)=>({unknown:0,case:1,exact:2}[a.m]-{unknown:0,case:1,exact:2}[b.m])||a.first-b.first);
+  let h=`<div class="pv-legend"><span class="rv rv-exact">точно</span> <span class="rv rv-case">падеж подобран</span> <span class="rv rv-unknown">не найдено</span></div>`;
+  h+=`<div><h4>Вставлено в документ · ${items.length}</h4>${items.map((x,i)=>
+    `<div class="pv-ent" onclick="pvJumpValue(${i})" title="${esc(RV_LABEL[x.m])}"><span class="rv rv-${x.m}">${x.m==='exact'?'✓':x.m==='case'?'падеж':'?'}</span><span class="val">${esc(x.v)}</span><span class="cnt">×${x.n}</span></div>`).join('')}</div>`;
+  PV.rvItems=items;
+  $('pvSide').innerHTML=h;
+}
 function renderPvSide(){
+  if(PV.restore)return renderPvSideRestored();
   const counts=pvTokenCounts(), groups={};
   Object.keys(counts).forEach(k=>{const g=pvGroup(k.split('_')[0]);groups[g]=(groups[g]||0)+1;});
   const L=PV.leaks; let h='';
@@ -1054,9 +1108,42 @@ async function renderPvBody(){
   }
   body.innerHTML=`<div class="pv-text">${esc(PV.text||'(в файле нет текста)')}</div>`; pvMarkTokens();
 }
+function pvMarkRestored(){
+  // colour every inserted value in document order: green exact, yellow case chosen, red not found
+  const body=$('pvBody'); if(!body||!PV)return;
+  body.querySelectorAll('span.rv').forEach(sp=>sp.replaceWith(document.createTextNode(sp.textContent)));
+  body.normalize();
+  const nodes=[], walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);
+  while(walker.nextNode())nodes.push(walker.currentNode);
+  let ni=0, off=0;
+  const hits=[];   // [node index, start, end, mark, value]
+  for(const [mark,value] of PV.restore.marks){
+    if(!value)continue;
+    for(let j=ni;j<nodes.length;j++){
+      const i=nodes[j].nodeValue.indexOf(value, j===ni?off:0);
+      if(i>=0){hits.push([j,i,i+value.length,mark,value]);ni=j;off=i+value.length;break;}
+    }
+  }
+  const byNode={}; hits.forEach(h=>(byNode[h[0]]=byNode[h[0]]||[]).push(h));
+  Object.entries(byNode).forEach(([j,hs])=>{
+    const n=nodes[j], t=n.nodeValue, frag=document.createDocumentFragment(); let last=0;
+    hs.forEach(([_,a,b,mark,value])=>{frag.appendChild(document.createTextNode(t.slice(last,a)));
+      const sp=document.createElement('span');sp.className='rv rv-'+mark;sp.textContent=t.slice(a,b);sp.dataset.value=value;sp.title=RV_LABEL[mark];
+      frag.appendChild(sp);last=b;});
+    frag.appendChild(document.createTextNode(t.slice(last))); n.replaceWith(frag);
+  });
+}
+function pvJumpValue(i){
+  const x=PV.rvItems[i]; if(!x)return;
+  const els=[...$('pvBody').querySelectorAll('span.rv')].filter(e=>e.dataset.value===x.v);
+  if(!els.length)return;
+  PV.rvNext=PV.rvNext||{}; const k=(PV.rvNext[i]||0)%els.length; PV.rvNext[i]=k+1;
+  els[k].scrollIntoView({block:'center'});els[k].classList.add('flash');setTimeout(()=>els[k].classList.remove('flash'),1500);
+}
 function pvMarkTokens(){
   // wrap every [TOKEN_N] in the rendered document into a coloured, clickable chip
   const body=$('pvBody'); if(!body||!PV)return;
+  if(PV.restore){pvMarkRestored();pvSearch();return;}
   body.querySelectorAll('span.tok').forEach(sp=>sp.replaceWith(document.createTextNode(sp.dataset.raw)));
   body.normalize();
   const showOrig=$('pvOrig').checked, seen={}, occ=PV.occurrences||{};
@@ -1166,6 +1253,20 @@ async function toggleVerbose(){
   if(!cur&&!confirm('Подробный журнал записывает фрагменты текста и значения — для разбора сложного случая. Выключится сам при перезапуске. Включить?'))return;
   const d=await apiFetch('/api/logs/verbose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!cur})});
   $('verboseBtn').textContent='📝 Подробный журнал: '+(d.verbose?'вкл':'выкл');
+}
+async function openSettings(){
+  try{
+    const st=await apiFetch('/api/settings');
+    $('setQuotes').value=st.org_quotes; $('setOpf').value=st.org_opf; $('setHl').checked=!!st.highlight_case;
+    $('setOverlay').classList.remove('hidden');
+  }catch(ex){toast('Настройки недоступны: '+ex.message,'err');}
+}
+async function saveSettings(){
+  try{
+    await apiFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({org_quotes:$('setQuotes').value,org_opf:$('setOpf').value,highlight_case:$('setHl').checked})});
+    $('setOverlay').classList.add('hidden'); toast('Настройки сохранены — действуют при следующем восстановлении','ok');
+  }catch(ex){toast('Ошибка: '+ex.message,'err');}
 }
 async function toggleArchive(){
   S.showArchive=!S.showArchive;

@@ -126,6 +126,8 @@ def init_db(db_path):
         cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
         if 'status' not in cols:
             conn.execute("ALTER TABLE mappings ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if 'opf' not in cols:      # legal form of a company as in the document («ООО»), task 3 §2.2
+            conn.execute("ALTER TABLE mappings ADD COLUMN opf TEXT")
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         if version < SCHEMA_VERSION:
             # v2.2 databases may hold duplicate tokens from the old COUNT(*)+1 bug — renumber
@@ -521,6 +523,29 @@ def get_reverse_info(db_path, session_id: str) -> dict:
         aliases = conn.execute('SELECT old_token, new_token FROM token_aliases WHERE session_id=?',
                                (session_id,)).fetchall()
     for a in aliases:                     # tokens merged away: old files still restore
+        if a['old_token'] not in out and a['new_token'] in out:
+            out[a['old_token']] = out[a['new_token']]
+    return out
+
+
+def set_org_forms(db_path, session_id: str, forms: dict):
+    """{token: «ООО»} — the legal form found next to a company name; the first one is kept."""
+    with get_conn(db_path) as conn:
+        for tok, opf in forms.items():
+            conn.execute("UPDATE mappings SET opf=? WHERE session_id=? AND token=? AND (opf IS NULL OR opf='')",
+                         (opf, session_id, tok))
+
+
+def get_org_forms(db_path, session_id: str) -> dict:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT token, opf FROM mappings WHERE session_id=? AND opf IS NOT NULL AND opf!=''",
+                            (session_id,)).fetchall()
+        aliases = conn.execute('SELECT old_token, new_token FROM token_aliases WHERE session_id=?',
+                               (session_id,)).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r['token'], r['opf'])
+    for a in aliases:
         if a['old_token'] not in out and a['new_token'] in out:
             out[a['old_token']] = out[a['new_token']]
     return out

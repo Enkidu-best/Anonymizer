@@ -153,12 +153,37 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             name = f'{restore_text(stem, db_path, session_id)}_restored{out_ext}'
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
+            if stats is not None:
+                save_restore_marks(output_dir, final.name, stats.marks)
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
 
     result['output_filename'] = final.name
     return result
+
+
+def _marks_path(output_dir: Path, filename: str) -> Path:
+    return Path(output_dir).parent / 'restore_marks' / f'{filename}.json'
+
+
+def save_restore_marks(output_dir, filename: str, marks):
+    """What was inserted into a restored file, in document order: [(mark, value)] with mark
+    'exact' / 'case' / 'unknown' — the preview colours them (task 3, §2.4). Local session
+    folder only, next to the file itself; never in the journal."""
+    import json
+    p = _marks_path(output_dir, filename)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(list(marks), ensure_ascii=False), encoding='utf-8')
+
+
+def load_restore_marks(output_dir, filename: str):
+    import json
+    p = _marks_path(output_dir, filename)
+    try:
+        return json.loads(p.read_text(encoding='utf-8'))
+    except Exception:
+        return None
 
 
 def _safe_name(name: str) -> str:
@@ -294,6 +319,17 @@ def _anonymize(src, out, ext, session_id, db_path, use_spacy, use_llm):
 
 def _deanonymize(src, out, ext, session_id, db_path):
     find = _rev_finder(session_id, db_path)
+    if ext not in IMAGE_EXT:
+        # names in new text whose case the rules can't tell: one short LLM request (§2.3)
+        try:
+            from core.extract import extract_text
+            from core import log
+            with log.stage('cases'):
+                find.prepare(src.read_text(encoding='utf-8', errors='replace') if ext == '.txt'
+                             else extract_text(src))
+        except Exception as ex:
+            from core import log
+            log.error('cases_prepare_failed', ex)
     if ext == '.txt':
         from core.anonymizer import apply_spans
         text = src.read_text(encoding='utf-8', errors='replace')

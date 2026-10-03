@@ -448,3 +448,41 @@ def test_manual_add_duplicate_warning(page, server):
     page.click('#modalOverlay .btn-modal-cancel >> nth=0')    # «Отмена»
     page.wait_for_timeout(300)
     assert page.evaluate('S.mappings.length') == 2
+
+
+def test_restored_preview_colours_values(page, server, tmp_path):
+    """Task 3, §2.4: in the preview of a restored file every inserted value is coloured —
+    green exact, yellow case chosen, red token not found — with one summary line; no red
+    «suspicious places» block."""
+    from docx import Document
+    sid = _make_session(page, 'Восстановление')
+    src = tmp_path / 'c.docx'
+    d = Document()
+    d.add_paragraph('Продавец: ООО «Вектор Трейд» в лице Белозёрова Аркадия Львовича, ИНН 7707083893.')
+    d.save(src)
+    _upload_file_path(page, src)
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    occ = page.evaluate('async (sid) => (await (await fetch(`/api/sessions/${sid}/mappings`)).json())', sid)
+    tok = {m['entity_type']: m['token'] for m in occ}
+    reply = tmp_path / 'reply.docx'
+    d = Document()
+    d.add_paragraph(f'Письмо направить [{tok["ФИО"]}] и [{tok["ЮЛ"]}], ИНН [{tok["ИНН"]}]. Ещё [FIO_99].')
+    d.save(reply)
+    page.click('#mDean')
+    _upload_file_path(page, reply)
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    row = page.inner_text('.file-row.ok')
+    assert 'Восстановлено 3 значения: 2 точно, 1 с подбором падежа, 1 не найдено' in row, row
+    assert 'подсвечены жёлтым' in row
+    page.click('.file-row.ok .btn-pv')
+    page.wait_for_selector('#pvBody span.rv-case')
+    assert page.inner_text('#pvBody span.rv-case') == 'Белозёрову Аркадию Львовичу'
+    assert page.locator('#pvBody span.rv-exact').count() == 2
+    assert page.locator('#pvBody span.rv-unknown').count() == 1
+    assert 'Восстановлено 3' in page.inner_text('#pvSummary')
+    assert page.locator('#pvSide .pv-leak.bad').count() == 0
+    assert page.locator('#pvSide .pv-ent').count() == 4
+    page.wait_for_timeout(400)
+    page.screenshot(path=str(Path(os.environ.get('PV_SHOT', tmp_path)) / 'restored.png'))

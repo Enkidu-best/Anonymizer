@@ -1,13 +1,13 @@
 """The local LLM as a reviewer of the rule layers (task 2, §1.5, §3).
 
-Instead of reading the whole document in 3 000-char chunks (minutes), two short calls:
+Instead of reading the whole document in 3 000-char chunks (minutes), short calls:
 
-1. review_list — every found person / company / address with one line of context:
-   is it personal data, which type, a duplicate of which item. Tens of short lines →
-   seconds. The LLM may only propose to unmask persons, companies, addresses; numbers
-   with a checksum are never touched.
-2. find_missed — only «suspicious» lines: not masked, with capitalized words that are
-   not roles/positions, quotes or long digit groups (5-15 % of a contract).
+review_list — every found person / company / address with one line of context, plus only
+«suspicious» lines (not masked, capitalized words that are not roles/positions, quotes,
+long digit groups — 5-15 % of a contract) in ONE request. The answer is only the changes
+by item number {"drop": [3], "merge": [[1, 4]], "add": [...]} — tens of tokens, not one
+object per item (task 3, §3). The LLM may only propose to unmask persons, companies,
+addresses; numbers with a checksum are never touched.
 
 The result is a proposal {add: [...], remove: [...], merge: [...]}; the user applies it.
 """
@@ -20,29 +20,32 @@ from core.lexicon import is_role_or_position, is_public_body
 
 REVIEW_TYPES = ('ФИО', 'ЮЛ', 'АДРЕС')
 
-REVIEW_SYSTEM = """Ты проверяешь значения, найденные автоматически в российском юридическом документе.
-Для КАЖДОГО пункта выбери категорию:
-PERSON — фамилия/имя/отчество конкретного человека (в любом падеже, с инициалами);
-COMPANY — название конкретной организации;
-ADDRESS — адрес конкретного объекта;
-ROLE — роль стороны договора (Арендатор, Покупатель, Сторона, Поручитель…);
-POSITION — должность (Генеральный директор, Председатель…);
-HEADING — заголовок раздела или обычные слова;
-LAW — название закона, кодекса, нормативного акта;
-PUBLIC — госорган, суд, Банк России, публичный реестр.
-same_as — номер пункта, если это то же лицо/компания/адрес в другой форме, иначе null.
-Строго JSON по схеме, по одному объекту на каждый пункт."""
+REVIEW_SYSTEM = """Ты проверяешь российский юридический документ после автоматического поиска персональных данных.
+Раздел НАЙДЕНО — пронумерованные значения с контекстом. Раздел СТРОКИ — строки, где могли что-то пропустить
+(уже заменённые метки вида [FIO_1], [YUL_2] не трогай).
+Верни ТОЛЬКО изменения, без повторения текста:
+drop — номера пунктов НАЙДЕНО, которые не являются ФИО конкретного человека, названием конкретной организации
+или адресом конкретного объекта: роль стороны (Арендатор, Покупатель, Сторона), должность, заголовок, обычные
+слова, закон, госорган, суд, публичный реестр;
+merge — пары номеров [a, b], если это одно и то же лицо, компания или адрес в другой форме;
+add — пропущенные в разделе СТРОКИ значения: ФИО людей (в любом падеже, с инициалами), названия конкретных
+организаций (без ООО и кавычек), адреса, номера документов и реквизиты; текст копируй точно как в строке.
+Если менять нечего — пустые списки."""
 
+ADD_TYPES = ['FIO', 'YUL', 'ADDR', 'PASSPORT', 'PHONE', 'EMAIL', 'INN', 'OGRN', 'ACCOUNT', 'DOB']
+# the answer is only the changes by item number: 10-40 tokens instead of one object per item
 REVIEW_SCHEMA = {
     'type': 'object',
-    'properties': {'items': {'type': 'array', 'items': {
-        'type': 'object',
-        'properties': {'id': {'type': 'integer'},
-                       'category': {'type': 'string', 'enum': ['PERSON', 'COMPANY', 'ADDRESS', 'ROLE',
-                                                               'POSITION', 'HEADING', 'LAW', 'PUBLIC']},
-                       'same_as': {'type': ['integer', 'null']}},
-        'required': ['id', 'category']}}},
-    'required': ['items'],
+    'properties': {
+        'drop': {'type': 'array', 'items': {'type': 'integer'}},
+        'merge': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'integer'},
+                                             'minItems': 2, 'maxItems': 2}},
+        'add': {'type': 'array', 'items': {'type': 'object',
+                                           'properties': {'text': {'type': 'string'},
+                                                          'type': {'type': 'string', 'enum': ADD_TYPES}},
+                                           'required': ['text', 'type']}},
+    },
+    'required': ['drop', 'merge', 'add'],
 }
 NOT_PII = {'ROLE', 'POSITION', 'HEADING', 'LAW', 'PUBLIC'}
 
@@ -62,15 +65,6 @@ def _safe_to_unmask(value: str, etype: str) -> bool:
     return False
 
 
-MISSED_SYSTEM = """Ты ищешь персональные данные, которые пропустила автоматическая проверка
-в российском юридическом документе. Данные, уже заменённые метками вида [FIO_1], [YUL_2],
-не трогай. Перечисли ТОЛЬКО незамаскированные: ФИО людей (в любом падеже, с инициалами),
-названия конкретных организаций (без ООО/АО и кавычек), адреса конкретных объектов,
-номера документов и реквизиты. НЕ включай: роли сторон (Арендатор, Покупатель, Сторона),
-должности, заголовки, названия законов, госорганов, судов, даты договоров и сроков.
-Текст значения копируй точно как в документе. Если ничего нет — пустой список."""
-
-
 def _context_line(text: str, value: str, width: int = 160) -> str:
     i = text.find(value)
     if i < 0:
@@ -85,8 +79,16 @@ def _context_line(text: str, value: str, width: int = 160) -> str:
     return re.sub(r'\s+', ' ', line).strip()
 
 
-def review_list(original_text: str, mappings: list, batch: int = 40, deadline: float = None) -> dict:
-    """Verdicts for all found persons / companies / addresses, in batches of `batch`."""
+def _category(value: str) -> str:
+    """Why a value is not personal data — for the user, from our own lexicon."""
+    if is_role_or_position(value):
+        return 'ROLE'
+    if is_public_body(value):
+        return 'PUBLIC'
+    return 'HEADING'
+
+
+def _entries(original_text: str, mappings: list) -> list:
     entries, seen = [], set()
     for m in mappings:
         if m['entity_type'] not in REVIEW_TYPES or m['token'] in seen:
@@ -94,33 +96,67 @@ def review_list(original_text: str, mappings: list, batch: int = 40, deadline: f
         seen.add(m['token'])
         entries.append({'token': m['token'], 'type': m['entity_type'], 'value': m['original_form'],
                         'context': _context_line(original_text, m['original_form'])})
-    remove, merge, errors = [], [], 0
-    for start in range(0, len(entries), batch):
+    return entries
+
+
+def _blocks(masked_text: str, block_chars: int) -> list:
+    blocks, cur = [], ''
+    for l in suspicious_lines(masked_text):
+        if len(cur) + len(l) > block_chars and cur:
+            blocks.append(cur)
+            cur = ''
+        cur += l + '\n'
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def ask(part: list, lines: str) -> dict:
+    """One request: a batch of found values and a block of suspicious lines → changes."""
+    found = '\n'.join(f'{i}. «{e["value"]}» — контекст: {e["context"] or "-"}' for i, e in enumerate(part, 1))
+    prompt = f'НАЙДЕНО:\n{found or "-"}\n\nСТРОКИ:\n{lines.strip() or "-"}'
+    raw = llm._ollama_generate(prompt, REVIEW_SYSTEM, timeout=120, schema=REVIEW_SCHEMA, num_predict=400)
+    data = json.loads(raw)
+    return {'drop': [i for i in data.get('drop') or [] if isinstance(i, int)],
+            'merge': [p for p in data.get('merge') or [] if isinstance(p, list) and len(p) == 2
+                      and all(isinstance(x, int) for x in p)],
+            'add': [a for a in data.get('add') or [] if isinstance(a, dict)]}
+
+
+def review_list(original_text: str, masked_text: str, mappings: list, batch: int = 40,
+                deadline: float = None, block_chars: int = 4000) -> dict:
+    """Found persons / companies / addresses in batches of `batch` plus suspicious lines;
+    the first requests carry both, extra blocks of lines go alone (at most 3 blocks)."""
+    entries = _entries(original_text, mappings)
+    blocks = _blocks(masked_text, block_chars)[:3]
+    parts = [entries[i:i + batch] for i in range(0, len(entries), batch)]
+    n = max(len(parts), len(blocks))
+    remove, merge, added, errors = [], [], [], 0
+    for k in range(n):
         if deadline and time.time() > deadline:
             errors += 1
             break
-        part = entries[start:start + batch]
-        lines = [f'{i}. «{e["value"]}» — контекст: {e["context"] or "-"}' for i, e in enumerate(part, 1)]
+        part = parts[k] if k < len(parts) else []
         try:
-            raw = llm._ollama_generate('\n'.join(lines), REVIEW_SYSTEM, timeout=120, schema=REVIEW_SCHEMA,
-                                       num_predict=32 * len(part) + 200)
-            verdicts = json.loads(raw).get('items', [])
+            ans = ask(part, blocks[k] if k < len(blocks) else '')
         except Exception as ex:
-            log.error('llm_review_batch', ex, batch=start // batch)
+            log.error('llm_review_batch', ex, batch=k)
             errors += 1
             continue
-        for v in verdicts:
-            i = v.get('id')
-            if not isinstance(i, int) or not 1 <= i <= len(part):
-                continue
-            e = part[i - 1]
-            if v.get('category') in NOT_PII and _safe_to_unmask(e['value'], e['type']):
-                remove.append({'token': e['token'], 'type': e['type'], 'category': v['category']})
-            j = v.get('same_as')
-            if isinstance(j, int) and 1 <= j <= len(part) and j != i:
-                other = part[j - 1]
-                if other['type'] == e['type'] and other['token'] != e['token'] and _plausible_same(e, other):
-                    merge.append({'token': e['token'], 'into': other['token']})
+        for i in ans['drop']:
+            if 1 <= i <= len(part):
+                e = part[i - 1]
+                if _safe_to_unmask(e['value'], e['type']):
+                    remove.append({'token': e['token'], 'type': e['type'], 'category': _category(e['value'])})
+        for i, j in ans['merge']:
+            if 1 <= i <= len(part) and 1 <= j <= len(part) and i != j:
+                a, b = part[i - 1], part[j - 1]
+                if a['type'] == b['type'] and a['token'] != b['token'] and _plausible_same(a, b):
+                    merge.append({'token': a['token'], 'into': b['token']})
+        for e in ans['add']:
+            t = (e.get('text') or '').strip()
+            if len(t) >= 3 and t in masked_text and not re.search(r'\[[A-Z]+_\d+', t):
+                added.append({'text': t, 'type': e.get('type', 'FIO')})
     # A→B and B→A are one proposal; never merge into something proposed for removal
     gone = {r['token'] for r in remove}
     uniq, pairs = [], set()
@@ -130,7 +166,7 @@ def review_list(original_text: str, mappings: list, batch: int = 40, deadline: f
             continue
         pairs.add(key)
         uniq.append(mg)
-    return {'remove': remove, 'merge': uniq, 'checked': len(entries), 'errors': errors}
+    return {'remove': remove, 'merge': uniq, 'missed': added, 'checked': len(entries), 'errors': errors}
 
 
 def _plausible_same(a: dict, b: dict) -> bool:
@@ -169,33 +205,6 @@ def suspicious_lines(masked_text: str) -> list:
     return out
 
 
-def find_missed(masked_text: str, block_chars: int = 5000, deadline: float = None) -> list:
-    """1-3 calls over suspicious lines only. Returns [{text, type}] found in the text."""
-    lines = suspicious_lines(masked_text)
-    blocks, cur = [], ''
-    for l in lines:
-        if len(cur) + len(l) > block_chars and cur:
-            blocks.append(cur)
-            cur = ''
-        cur += l + '\n'
-    if cur:
-        blocks.append(cur)
-    found = []
-    for b in blocks[:3]:
-        if deadline and time.time() > deadline:
-            break
-        try:
-            data = json.loads(llm._ollama_generate(b, MISSED_SYSTEM, timeout=120))
-        except Exception as ex:
-            log.error('llm_missed_failed', ex)
-            continue
-        for e in data.get('entities', []):
-            t = (e.get('text') or '').strip()
-            if len(t) >= 3 and t in masked_text and not re.search(r'\[[A-Z]+_\d+', t):
-                found.append({'text': t, 'type': e.get('type', 'FIO')})
-    return found
-
-
 _TYPE = {'FIO': 'ФИО', 'YUL': 'ЮЛ', 'ADDR': 'АДРЕС', 'ADDR_PHYS': 'АДРЕС', 'ADDR_CORP': 'АДРЕС',
          'PASSPORT': 'ПАСПОРТ', 'DOB': 'ДАТАРОЖД', 'PHONE': 'ТЕЛЕФОН', 'PHONE_NUMBER': 'ТЕЛЕФОН',
          'TEL': 'ТЕЛЕФОН', 'EMAIL': 'EMAIL', 'INN': 'ИНН', 'OGRN': 'ОГРН', 'ACCOUNT': 'РС'}
@@ -215,20 +224,14 @@ def review(original_text: str, masked_text: str, mappings: list, budget_s: float
     missed, t1 = [], t0
     try:
         with log.stage('llm_review'):
-            f_list = ex.submit(review_list, original_text, mappings, 40, deadline)
+            f = ex.submit(review_list, original_text, masked_text, mappings, 40, deadline)
             try:
-                r = f_list.result(timeout=max(1, deadline - time.time()))
+                r = f.result(timeout=max(1, deadline - time.time()))
             except _Timeout:
                 r['errors'] = 1
                 log.event('llm_review_timeout', step='list', budget_s=budget_s)
+            missed = r.get('missed', [])
             t1 = time.time()
-            if time.time() < deadline:
-                f_missed = ex.submit(find_missed, masked_text, 5000, deadline)
-                try:
-                    missed = f_missed.result(timeout=max(1, deadline - time.time()))
-                except _Timeout:
-                    r['errors'] = r.get('errors', 0) + 1
-                    log.event('llm_review_timeout', step='missed', budget_s=budget_s)
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
     known = {m['original_form'] for m in mappings}

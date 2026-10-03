@@ -74,6 +74,8 @@ init_db(DB_PATH)
 # ── Journal (no personal data) ───────────────────────────────────────────────
 from core import log as journal
 journal.setup(journal.default_dir(getattr(sys, 'frozen', False), Path(__file__).parent))
+from core import settings as user_settings
+user_settings.configure(DATA_DIR)
 
 
 def _startup_journal():
@@ -355,6 +357,14 @@ def _duplicate_of(sid, original, entity_type, exclude=None):
         return None
     return {'token': tok, 'value': forms[0]['canonical_form'] or forms[0]['original_form'],
             'entity_type': forms[0]['entity_type']}
+
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def settings_route():
+    """«Настройки»: restore of company names (quotes, legal form), yellow highlight."""
+    if request.method == 'POST':
+        return jsonify(user_settings.update(request.get_json(force=True, silent=True) or {}))
+    return jsonify(user_settings.get())
 
 
 @app.route('/api/sessions/<sid>/duplicates', methods=['GET'])
@@ -675,6 +685,14 @@ def preview_file(sid, filename):
     inp = next((i for i, o in _manifest(UPLOADS_DIR / sid).items() if filename in o.values()), None)
     out = {'filename': filename, 'forms': forms, 'kind': 'text', 'pages': 0, 'text': '', 'input': inp,
            'occurrences': get_occurrences(DB_PATH, sid, filename)}
+    from core.handlers import load_restore_marks
+    marks = load_restore_marks(path.parent, filename)
+    if marks is not None:
+        # a restored file: inserted values coloured, no leak check (the values are meant to be there)
+        out['restore'] = {'marks': marks,
+                          'exact': sum(1 for m, _ in marks if m == 'exact'),
+                          'case': sum(1 for m, _ in marks if m == 'case'),
+                          'unknown': sum(1 for m, _ in marks if m == 'unknown')}
     if path.suffix.lower() in ('.docx', '.docm'):
         out['kind'] = 'docx'      # rendered like in Word by docx-preview in the browser
     if ext in IMAGE_EXT:
@@ -688,7 +706,7 @@ def preview_file(sid, filename):
                                    for row in ws.iter_rows(max_row=800, values_only=True)]}
                          for ws in wb.worksheets]
         out['text'] = extract_text(path, meta=False)[:300000]
-        out['leaks'] = leak_check(path, sid, DB_PATH)
+        out['leaks'] = None if marks is not None else leak_check(path, sid, DB_PATH)
     else:
         try:
             out['text'] = extract_text(path, meta=False)[:300000]
@@ -698,7 +716,7 @@ def preview_file(sid, filename):
             import pymupdf
             out['kind'] = 'pdf'
             out['pages'] = len(pymupdf.open(str(path)))
-        out['leaks'] = leak_check(path, sid, DB_PATH)
+        out['leaks'] = None if marks is not None else leak_check(path, sid, DB_PATH)
     from core.entities import review_pairs
     from core.db import get_distinct_pairs
     out['similar'] = review_pairs(get_session_mappings(DB_PATH, sid), get_distinct_pairs(DB_PATH, sid))
