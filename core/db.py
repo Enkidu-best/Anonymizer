@@ -423,7 +423,13 @@ def merge_tokens(db_path, session_id: str, token: str, into: str):
 def add_alias(db_path, session_id: str, token: str, original: str, entity_type: str):
     """Another written form of an existing entity («NTI» for «Northwind Trading & Investments»)."""
     with get_conn(db_path) as conn:
-        conn.execute('INSERT OR IGNORE INTO mappings (session_id, token, original_form, canonical_form, entity_type) '
+        row = conn.execute('SELECT token FROM mappings WHERE session_id=? AND original_form=? AND entity_type=?',
+                           (session_id, original, entity_type)).fetchone()
+        if row:      # the form was already known under another token: it moves here
+            conn.execute("UPDATE mappings SET token=?, status='active' WHERE session_id=? AND original_form=? "
+                         "AND entity_type=?", (token, session_id, original, entity_type))
+            return
+        conn.execute('INSERT INTO mappings (session_id, token, original_form, canonical_form, entity_type) '
                      'VALUES (?,?,?,?,?)', (session_id, token, original, original, entity_type))
 
 

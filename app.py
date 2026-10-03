@@ -727,6 +727,20 @@ def preview_file(sid, filename):
     return jsonify(out)
 
 
+@app.route('/api/sessions/<sid>/mappings/<token>/alias', methods=['POST'])
+def add_alias_route(sid, token):
+    """«Добавить вариант написания»: another written form of this entity gets the same token."""
+    from core.db import get_session_mappings, add_alias, remember_entity
+    value = ((request.get_json(force=True, silent=True) or {}).get('original_form') or '').strip()
+    m = next((x for x in get_session_mappings(DB_PATH, sid) if x['token'] == token), None)
+    if not m or not value:
+        return jsonify({'error': 'Запись не найдена или пустое значение'}), 400
+    add_alias(DB_PATH, sid, token, value, m['entity_type'])
+    remember_entity(DB_PATH, value, m['entity_type'])
+    journal.event('mapping_edit', token=token, action='alias')
+    return jsonify({'ok': True, 'token': token})
+
+
 @app.route('/api/sessions/<sid>/mappings/<token>/merge', methods=['POST'])
 def merge_mapping(sid, token):
     """«Это одно и то же»: every form of `token` moves under `into`; the old token is kept

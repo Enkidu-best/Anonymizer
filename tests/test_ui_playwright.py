@@ -486,3 +486,79 @@ def test_restored_preview_colours_values(page, server, tmp_path):
     assert page.locator('#pvSide .pv-ent').count() == 4
     page.wait_for_timeout(400)
     page.screenshot(path=str(Path(os.environ.get('PV_SHOT', tmp_path)) / 'restored.png'))
+
+
+def _contract_docx(path, extra=()):
+    from docx import Document
+    d = Document()
+    d.add_paragraph('Продавец: Белозёров Аркадий Львович, ИНН 7707083893.')
+    d.add_paragraph('Покупатель: ООО «Вектор Трейд» в лице Скворцовой Елены Дмитриевны.')
+    d.add_paragraph('Белозёрову Аркадию Львовичу передано уведомление. Секретное слово Златогорье.')
+    for p in extra:
+        d.add_paragraph(p)
+    d.save(path)
+    return path
+
+
+def test_preview_select_to_mask_and_jump(page, server, tmp_path):
+    """Task 3, §5: one view, selected text → «Замаскировать» → record added and the file
+    rebuilt; a click on a value in the panel jumps to it, again → the next occurrence."""
+    _make_session(page, 'Просмотр')
+    _upload_file_path(page, _contract_docx(tmp_path / 'c.docx'))
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    page.click('.file-row.ok .btn-pv')
+    page.wait_for_selector('#pvBody .tok')
+    assert page.locator('.pv-tab').count() == 0                      # no «Текст» tab any more
+    # jump: FIO occurs twice
+    fio = page.locator('#pvSide .pv-ent', has_text='FIO_1').first
+    fio.click()
+    first = page.evaluate("[...document.querySelectorAll('#pvBody span.tok[data-token=\"FIO_1\"]')].findIndex(e => e.classList.contains('cur'))")
+    page.keyboard.press('ArrowDown')
+    second = page.evaluate("[...document.querySelectorAll('#pvBody span.tok[data-token=\"FIO_1\"]')].findIndex(e => e.classList.contains('cur'))")
+    assert (first, second) == (0, 1)
+    # select a word in the document → floating button → form prefilled → added
+    page.evaluate('''() => {
+        const w = document.createTreeWalker(document.getElementById('pvBody'), NodeFilter.SHOW_TEXT);
+        while (w.nextNode()) { const n = w.currentNode, i = n.nodeValue.indexOf('Златогорье');
+            if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 10);
+                const s = getSelection(); s.removeAllRanges(); s.addRange(r); break; } }
+        document.getElementById('pvBody').dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+    }''')
+    page.wait_for_selector('#pvMaskBtn:not(.hidden)')
+    page.click('#pvMaskBtn')
+    page.wait_for_selector('#editMapOverlay:not(.hidden)')
+    assert page.input_value('#editMapOriginal') == 'Златогорье'
+    page.select_option('#editMapType', 'ЮЛ')
+    page.click('#editMapOkBtn')
+    page.wait_for_function("PV && PV.text && !PV.text.includes('Златогорье')", timeout=60000)
+    assert 'Златогорье' not in page.inner_text('#pvBody')
+
+
+def test_duplicates_section_and_pptx_hint(page, server, tmp_path):
+    sid = _make_session(page, 'Дубли в просмотре')
+    _upload_file_path(page, _contract_docx(tmp_path / 'c.docx', ['Также ООО «Вектор Тренд» подтверждает.']))
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    page.click('.file-row.ok .btn-pv')
+    page.wait_for_selector('#pvSide .pv-dups')
+    assert 'Проверка дублей · 1' in page.text_content('#pvSide .pv-dups summary')
+    page.locator('#pvSide .pv-ent').first.click()
+    page.wait_for_timeout(400)
+    page.screenshot(path=str(Path(os.environ.get('PV_SHOT', tmp_path)) / 'preview_panel.png'))
+    page.click('#pvSide .pv-dups button:has-text("Это разные")')
+    page.wait_for_function("!document.querySelector('#pvSide .pv-dups')")
+    left = page.evaluate('async (sid) => (await (await fetch(`/api/sessions/${sid}/duplicates`)).json()).length', sid)
+    assert left == 0
+    page.keyboard.press('Escape')
+    # a presentation: no preview button, a hint instead
+    from pptx import Presentation
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[1]).shapes.title.text = 'Белозёров Аркадий Львович'
+    prs.save(tmp_path / 's.pptx')
+    _upload_file_path(page, tmp_path / 's.pptx')
+    page.click('#procBtn')
+    page.wait_for_function("document.querySelectorAll('.file-row.ok').length === 2", timeout=60000)
+    row = page.locator('.file-row.ok', has_text='.pptx')
+    assert row.locator('.btn-pv').count() == 0
+    assert 'просмотр недоступен' in row.inner_text()
