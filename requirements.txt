@@ -2,6 +2,7 @@
 flask==3.1.3
 python-docx==1.2.0
 pymupdf==1.28.2
+pdf2docx==0.5.13          # PDF with a text layer → Word (MIT; uses PyMuPDF)
 openpyxl==3.1.5
 striprtf==0.0.33
 lxml==6.1.3

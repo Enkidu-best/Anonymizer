@@ -389,7 +389,7 @@ tr:hover td{background:var(--card2)}
       <button onclick="openLogs()">📁 Открыть папку журналов</button>
       <button onclick="toggleVerbose()" id="verboseBtn">📝 Подробный журнал: выкл</button>
       <button onclick="toggleArchive()" id="archiveBtn">🗄 Показать архив записей</button>
-      <button onclick="openSettings()">Настройки восстановления…</button>
+      <button onclick="openSettings()">Настройки…</button>
     </div>
   </div>
   <button class="btn-exit" onclick="doShutdown()">Завершить</button>
@@ -540,8 +540,8 @@ tr:hover td{background:var(--card2)}
 <!-- SETTINGS -->
 <div class="modal-overlay hidden" id="setOverlay">
   <div class="modal" style="max-width:520px">
-    <h3>Настройки восстановления</h3>
-    <p class="modal-sub">Как вставлять значения в новый текст внешней нейросети (там, где исходной формы нет).</p>
+    <h3>Настройки</h3>
+    <p class="modal-sub">Восстановление: как вставлять значения в новый текст внешней нейросети (там, где исходной формы нет).</p>
     <label class="modal-field-label">Название организации без кавычек</label>
     <select class="modal-inp" id="setQuotes">
       <option value="always">Ставить кавычки «»</option>
@@ -553,7 +553,11 @@ tr:hover td{background:var(--card2)}
       <option value="always">Всегда, если рядом её нет</option>
       <option value="never">Не добавлять</option>
     </select>
-    <label class="pv-chk" style="margin-top:12px"><input type="checkbox" id="setHl"> Подсветить места для проверки в файле (жёлтая заливка Word там, где падеж имени подобран автоматически)</label>
+    <h3 style="margin-top:16px;font-size:15px">PDF с текстом</h3>
+    <label class="pv-chk"><input type="checkbox" id="setPdfWord"> Превращать в Word (DOCX): можно править, работает «исходный текст» в просмотре. Сканы остаются PDF с чёрными плашками.</label>
+    <label class="pv-chk"><input type="checkbox" id="setKeepPdf"> Также сохранить обезличенный PDF</label>
+    <h3 style="margin-top:16px;font-size:15px">Проверка</h3>
+    <label class="pv-chk" style="margin-top:4px"><input type="checkbox" id="setHl"> Подсветить места для проверки в файле (жёлтая заливка Word там, где падеж имени подобран автоматически)</label>
     <div class="modal-btns" style="margin-top:16px">
       <button class="btn-modal-cancel" onclick="$('setOverlay').classList.add('hidden')">Отмена</button>
       <button class="btn-modal-ok" onclick="saveSettings()">Сохранить</button>
@@ -982,7 +986,7 @@ function renderFileList(){
       </div>
       <div class="file-actions">
         ${item.status==='ok'&&item.output
-          ?`<button class="btn-pv" onclick="openPreview('${sid}','${esc(item.output).replace(/'/g,"\\'")}')" title="Посмотреть результат, не открывая файл">👁 Просмотр</button><a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.output)}" download="${esc(item.output)}">⬇ Скачать</a>`:''}
+          ?`<button class="btn-pv" onclick="openPreview('${sid}','${esc(item.output).replace(/'/g,"\\'")}')" title="Посмотреть результат, не открывая файл">👁 Просмотр</button><a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.output)}" download="${esc(item.output)}">⬇ Скачать</a>${item.extra?`<a class="btn-dl" href="/api/download/${sid}/${encodeURIComponent(item.extra)}" download="${esc(item.extra)}" title="Обезличенный PDF">⬇ PDF</a>`:''}`:''}
         ${item.status!=='loading'?`<button class="rm-btn" title="Удалить файл из сессии" onclick="removeFile(${i})">×</button>`:''}
       </div>
     </div>`;
@@ -1258,13 +1262,15 @@ async function openSettings(){
   try{
     const st=await apiFetch('/api/settings');
     $('setQuotes').value=st.org_quotes; $('setOpf').value=st.org_opf; $('setHl').checked=!!st.highlight_case;
+    $('setPdfWord').checked=!!st.pdf_to_word; $('setKeepPdf').checked=!!st.keep_pdf;
     $('setOverlay').classList.remove('hidden');
   }catch(ex){toast('Настройки недоступны: '+ex.message,'err');}
 }
 async function saveSettings(){
   try{
     await apiFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({org_quotes:$('setQuotes').value,org_opf:$('setOpf').value,highlight_case:$('setHl').checked})});
+      body:JSON.stringify({org_quotes:$('setQuotes').value,org_opf:$('setOpf').value,highlight_case:$('setHl').checked,
+        pdf_to_word:$('setPdfWord').checked,keep_pdf:$('setKeepPdf').checked})});
     $('setOverlay').classList.add('hidden'); toast('Настройки сохранены — действуют при следующем восстановлении','ok');
   }catch(ex){toast('Ошибка: '+ex.message,'err');}
 }
@@ -1325,7 +1331,7 @@ async function doProcess(){
     S.lastSid=d.session_id;
     d.results.forEach(r=>{
       const item=S.files.find(x=>x.file.name===r.filename&&x.status==='loading');
-      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;
+      if(item){item.status=r.status==='ok'?'ok':'err';item.output=r.output||null;item.extra=r.extra_output||null;item.fromPdf=r.converted_from==='pdf';item.entities=r.entities_found||0;item.error=r.error||null;item.leaks=r.leaks||null;item.note=r.note||null;
         item.restore=r.restore||null;item.applyErrors=r.apply_errors||0;
         if(r.llm_job){item.llm={id:r.llm_job,status:'running'};pollReview(item);}}
     });

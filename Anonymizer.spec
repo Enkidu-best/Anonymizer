@@ -12,7 +12,7 @@ MAC = sys.platform == 'darwin'
 datas = [(str(ROOT / 'static'), 'static')]
 binaries, hiddenimports = [], collect_submodules('core')
 packages = ['spacy', 'thinc', 'ru_core_news_lg', 'pymorphy3', 'pymorphy3_dicts_ru',
-            'webview', 'pymupdf', 'lxml', 'docx', 'openpyxl', 'PIL', 'pillow_heif']
+            'webview', 'pymupdf', 'lxml', 'docx', 'openpyxl', 'PIL', 'pillow_heif', 'pdf2docx', 'cv2', 'fontTools']
 for pkg in packages:
     try:
         d, b, h = collect_all(pkg)

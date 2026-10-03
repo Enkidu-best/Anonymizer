@@ -55,7 +55,12 @@ def _safe_to_unmask(value: str, etype: str) -> bool:
     by morphology, or an address with a house number."""
     from core.lexicon import name_like, _WORD
     if etype == 'АДРЕС':
-        return not re.search(r'\d', value)
+        # «Общая площадь кв.м» found as an address — yes; «Тверская область, Конаковский район»
+        # (a part of a real address) — never
+        from core.entities import address_parts
+        geo = {'обл', 'рн', 'г', 'ул', 'нп', 'пр', 'пер', 'наб', 'ш', 'бр', 'мкр', 'респ', 'край', 'д'}
+        words = set(' '.join(address_parts(value)).split())
+        return not re.search(r'\d', value) and not (words & geo)
     words = [w for w in _WORD.findall(value) if len(w) > 1]
     if etype == 'ФИО':
         return bool(words) and not any(name_like(w) for w in words)

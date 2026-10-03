@@ -100,6 +100,9 @@ def run_document(client: Client, src: Path, work: Path, spacy=True, llm=False, l
         elif st.get('status') != 'done':
             rep['errors'].append(f'llm_review:{st.get("status")}')
     anon = client.download(sid, r['output'], work / ('anon' + Path(r['output']).suffix))
+    out_ext = Path(r['output']).suffix.lower()
+    # a PDF with a text layer comes back as Word (task 3, §4): check it as Word
+    layout = ext in LAYOUT and out_ext != '.docx'
     maps = client.mappings(sid)
     rep['found'] = dict(Counter(m['token'].rsplit('_', 1)[0] for m in {m['token']: m for m in maps}.values()))
 
@@ -135,7 +138,7 @@ def run_document(client: Client, src: Path, work: Path, spacy=True, llm=False, l
         rep['errors'].append(f'masked_roles:{len(roles)}')
     # 4e. preview (what the user looks at) == downloaded file
     pv = client.json('get', f'/api/sessions/{sid}/preview/{r["output"]}')
-    if ext not in LAYOUT:
+    if not layout:
         # same words and tokens; line breaks inside a paragraph may be split differently
         pv_words = Counter(_WORDS.findall(norm(pv['text'])))
         file_words = Counter(_WORDS.findall(norm('\n'.join(got['body']))))
@@ -144,12 +147,17 @@ def run_document(client: Client, src: Path, work: Path, spacy=True, llm=False, l
             rep['errors'].append(f'preview_differs:{sum(diff.values())}_words')
 
     # 5-6. deanonymize the downloaded file, compare place by place with the original
-    if ext not in LAYOUT:
+    if not layout:
         t = time.time()
         r2 = client.process(sid, anon, mode='deanonymize', name=r['output'])
         rep['times']['restore'] = round(time.time() - t, 2)
         back = client.download(sid, r2['output'], work / ('back' + Path(r2['output']).suffix))
-        orig_p = [norm(x) for x in places(src if ext not in ('.doc', '.odt') else _converted(src, work))['body']]
+        if ext == '.pdf':
+            from core.handlers import _pdf_to_docx
+            base = _pdf_to_docx(src, work)
+        else:
+            base = src if ext not in ('.doc', '.odt') else _converted(src, work)
+        orig_p = [norm(x) for x in places(base)['body']]
         back_p = [norm(x) for x in places(back)['body']]
         if len(orig_p) != len(back_p):
             rep['errors'].append(f'restore_places_count:{len(orig_p)}→{len(back_p)}')
@@ -161,7 +169,7 @@ def run_document(client: Client, src: Path, work: Path, spacy=True, llm=False, l
             rep['errors'].append(f'restore_unknown:{len(r2["restore"]["unknown"])}')
 
         # 7. reply of an external LLM: reordered, dropped, repeated and damaged tokens
-        if ext in OFFICE | {'.txt'} and TOKEN_RE.search(body):
+        if (ext in OFFICE | {'.txt'} or out_ext == '.docx') and TOKEN_RE.search(body):
             rep.update(_llm_reply(client, sid, anon, work))
 
         # 8. mapping edits: excluded / edited entries keep old files restorable

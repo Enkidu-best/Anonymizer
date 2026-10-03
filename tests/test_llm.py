@@ -73,3 +73,10 @@ def test_review_short_answer_is_filtered(monkeypatch):
     assert out['merge'] == [{'token': 'FIO_2', 'into': 'FIO_3'}]
     assert out['add'] == [{'value': 'Агафонов', 'type': 'ФИО'}]
     assert seen['num_predict'] <= 400 and 'drop' in seen['schema']['properties']
+
+
+def test_llm_never_unmasks_a_real_address_part():
+    from core.llm_review import _safe_to_unmask
+    assert _safe_to_unmask('Общая площадь кв.м', 'АДРЕС')
+    assert not _safe_to_unmask('Тверская область, Конаковский район', 'АДРЕС')
+    assert not _safe_to_unmask('г. Тверь, ул. Озёрная', 'АДРЕС')

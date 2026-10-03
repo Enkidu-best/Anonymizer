@@ -81,6 +81,96 @@ def _convert_to_docx(src: Path, out_dir: Path) -> Path:
     return dst
 
 
+def pdf_is_digital(path: Path) -> bool:
+    """A PDF made from a text document: every page has a readable text layer and no picture
+    covering a large part of it. A scan — even with an OCR text layer — is not: converted
+    to Word it would carry the page image with the values in it (task 3, §4)."""
+    import pymupdf
+    try:
+        doc = pymupdf.open(str(path))
+    except Exception:
+        return False
+    if doc.is_encrypted or len(doc) == 0:
+        return False
+    for page in doc:
+        _, text, _ = _page_words(page)
+        if not text.strip() or not text_layer_ok(text):
+            return False
+        area = abs(page.rect)
+        covered = 0.0
+        for img in page.get_images(full=True):
+            for r in page.get_image_rects(img[0]):
+                covered += abs(r & page.rect)
+        if area and covered / area > 0.3:
+            return False
+    return True
+
+
+def _pdf_to_docx(src: Path, out_dir: Path) -> Path:
+    """pdf2docx (MIT, on PyMuPDF): tables stay tables, lines of a paragraph are joined."""
+    import logging
+    from pdf2docx import Converter
+    logging.getLogger('pdf2docx').setLevel(logging.ERROR)
+    logging.getLogger().setLevel(max(logging.getLogger().level, logging.WARNING))
+    dst = out_dir / (src.stem + '.docx')
+    cv = Converter(str(src))
+    try:
+        # «stream» tables (by text alignment) stay on: without them real tables of the owner's
+        # PDFs were lost; a long legal act gets some extra tables instead (CHANGELOG 3.4.0)
+        cv.convert(str(dst), multi_processing=False)
+    finally:
+        cv.close()
+    _unglue_line_ends(src, dst)
+    return dst
+
+
+def _unglue_line_ends(pdf: Path, docx: Path):
+    """pdf2docx glues words when the PDF has no space character between them — at a line end
+    or where the gap is made by position («числатекущего», «ИвановИван» — a name the detectors
+    then miss). Neighbouring PDF words glued in the DOCX get their space back, unless the PDF
+    itself has that glued word."""
+    import pymupdf
+    from core.ooxml import Package, _segments
+    pairs, whole = set(), set()
+    for page in pymupdf.open(str(pdf)):
+        words = page.get_text('words')
+        whole.update(w[4] for w in words)
+        for a, b in zip(words, words[1:]):
+            line_end = (a[5], a[6]) != (b[5], b[6])
+            if line_end and a[4].endswith(('-', '\u00ad')):
+                continue                 # a hyphenated word: «каких-» + «либо»
+            pairs.add((a[4], b[4]))      # also inside a line: a gap made by position, not by a space
+    pairs = {(a, b) for a, b in pairs if a + b not in whole and len(a + b) >= 4}
+    rx = re.compile('|'.join(re.escape(a + b) for a, b in sorted(pairs, key=lambda x: -len(x[0] + x[1])))) \
+        if pairs else None
+    split = {a + b: a + ' ' + b for a, b in pairs}
+    pkg = Package(docx)
+    changed = False
+    for name, root in pkg.xml.items():
+        if not name.startswith('word/'):
+            continue
+        for seg in _segments(root):
+            # 1) two runs side by side: «Федеральным» | «законом» (a link in another colour)
+            nodes = [n for n, t in seg.pieces if n is not None and (n.text or '')]
+            for a, b in zip(nodes, nodes[1:]):
+                lt, rt = a.text, b.text
+                if not lt or not rt or lt[-1].isspace() or rt[0].isspace():
+                    continue
+                lw, rw = lt.split()[-1], rt.split()[0]
+                if lw in whole and rw in whole and lw + rw not in whole and rw[0].isalnum():
+                    a.text = lt + ' '
+                    a.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                    changed = True
+            seg.pieces = [(n, (n.text or '') if n is not None else t) for n, t in seg.pieces]
+            # 2) inside one run
+            if pairs:
+                spans = [(m.start(), m.end(), split[m.group(0)]) for m in rx.finditer(seg.text)]
+                if spans and seg.apply(spans):
+                    changed = True
+    if changed:
+        pkg.save(docx)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +192,14 @@ def _clean_stem(stem: str) -> str:
 def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
                           use_spacy: bool = True,
-                          use_llm: bool = False, llm_only: bool = False) -> dict:
+                          use_llm: bool = False, llm_only: bool = False, pdf_to_word: bool = None,
+                          keep_pdf: bool = None) -> dict:
+    """pdf_to_word: a PDF with a text layer is anonymized as a Word file (settings default);
+    keep_pdf: also the anonymized PDF (result['extra_output'])."""
+    from core import settings as user_settings
+    st = user_settings.get()
+    pdf_to_word = st['pdf_to_word'] if pdf_to_word is None else pdf_to_word
+    keep_pdf = st['keep_pdf'] if keep_pdf is None else keep_pdf
     _STATE.llm_only = llm_only     # «Только нейросеть»: rules really switched off
     valid, err = validate_file(input_path)
     if not valid:
@@ -113,10 +210,17 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
     stem = _clean_stem(unicodedata.normalize('NFC', input_path.stem))
     work = None
     src = input_path
+    converted_pdf = False
     if ext in CONVERT_EXT:
         work = Path(tempfile.mkdtemp())
         src = _convert_to_docx(input_path, work)
         ext = '.docx'
+    elif ext == '.pdf' and mode == 'anonymize' and pdf_to_word and pdf_is_digital(input_path):
+        from core import log
+        work = Path(tempfile.mkdtemp())
+        with log.stage('pdf_to_docx'):
+            src = _pdf_to_docx(input_path, work)
+        ext, converted_pdf = '.docx', True
     out_ext = '.png' if ext in ('.heic', '.bmp', '.webp') else ext
 
     try:
@@ -160,6 +264,12 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             shutil.rmtree(work, ignore_errors=True)
 
     result['output_filename'] = final.name
+    if converted_pdf:
+        result['converted_from'] = 'pdf'
+        if keep_pdf:
+            extra = process_uploaded_file(input_path, output_dir, session_id, db_path, mode, use_spacy,
+                                          use_llm, llm_only, pdf_to_word=False, keep_pdf=False)
+            result['extra_output'] = extra['output_filename']
     return result
 
 
@@ -248,7 +358,24 @@ def _detect(text, session_id, db_path, use_spacy, use_llm):
     from core.anonymizer import anonymize_text_pipeline
     _, reps = anonymize_text_pipeline(text, db_path, session_id, use_spacy=use_spacy, use_llm=use_llm,
                                       llm_only=getattr(_STATE, 'llm_only', False))
-    return reps
+    return _broken_occurrences(text, reps)
+
+
+def _broken_occurrences(text: str, reps: dict) -> dict:
+    """A value found whole in one place may be cut by a paragraph break in another («…, д.» |
+    «14, к. 2, кв. 5» — PDF converted to Word, a narrow table column). Such occurrences are
+    added as keys with the break; _split_lines then masks them part by part."""
+    out = dict(reps)
+    for k, v in reps.items():
+        words = k.split()
+        if len(k) < 8 or len(words) < 2 or '\n' in k:
+            continue
+        rx = re.compile(r'(?<![\w])' + r'\s+'.join(map(re.escape, words)) + r'(?![\w])')
+        for m in rx.finditer(text):
+            occ = m.group(0)
+            if '\n' in occ and occ not in out and all(len(p.strip()) >= 5 for p in occ.split('\n')):
+                out[occ] = v
+    return out
 
 
 # Per-request state (Flask serves requests in threads): forms recorded while

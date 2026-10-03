@@ -519,8 +519,12 @@ def process():
                     r['llm_job'] = _start_review(sid, src, out_dir / r['output_filename'])
             out_name = r['output_filename']
             _remember_output(session_dir, src.name, mode, out_name)
+            if r.get('extra_output'):
+                _remember_output(session_dir, src.name, mode + '_pdf', r['extra_output'])
             results.append({'filename': f.filename,
                              'output':   out_name,
+                             'extra_output': r.get('extra_output'),
+                             'converted_from': r.get('converted_from'),
                              'status':   'ok',
                              'entities_found': r.get('entities_found', 0),
                              'leaks': r.get('leaks'),
