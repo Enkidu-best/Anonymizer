@@ -48,13 +48,14 @@ Debug endpoints: `/api/status`, `/api/debug`, `/api/llm-status`.
 4. `core/llm.py: apply_llm_pass` — optional Ollama.
 5. `_propagate_surnames` — a surname of a found person anywhere in the text → same token.
 6. `_apply_known_entities` — re-applies session mappings (bounded).
+7. `consolidate` — `db.consolidate_session`: tokens that are one entity by the automatic merge rules (`entities.auto_groups`: numbers by digits, persons by pairwise-compatible forms, companies without legal form/quotes or by lemmas, addresses by `address_parts`) are merged into the lowest token. Pairs for a human: `entities.review_pairs` («Проверка дублей»; «Это разные» → `distinct_pairs`). `_record_org_forms` stores each company's legal form (`mappings.opf`).
 
 Text-level API: `anonymize_text()` / `restore_text()` (used by the bench and tests).
 
 ### One token per entity, exact restore
-`db.get_or_create_token` reuses the token of the same entity (`_same_entity_token` + [core/entities.py](core/entities.py): person = surname key + compatible name/initials; company = word lemmas or compact letters-only key for OCR splits; address = normalized abbreviations; numbers = digits). Several `mappings` rows may share a token.
+`db.get_or_create_token` reuses the token of the same entity (`_same_entity_token` + [core/entities.py](core/entities.py): person = surname key + compatible name/initials; company = word lemmas or compact letters-only key for OCR splits; address = `address_parts`: abbreviations, settlement kind, district, word order before the house; numbers = digits + series letters, never by similarity). Several `mappings` rows may share a token.
 **Mappings are never deleted** (schema v4, `status`: active / excluded = «не маскировать» / replaced = edited); inactive rows still restore earlier files; token numbers are never reused; merges keep the old token in `token_aliases`. Exclusions (`db.ExclusionSet`) match every form of an excluded entity.
-**Restore by place**: while anonymizing, `make_finder(..., places=)` stores per paragraph/cell a fingerprint of its anonymized text + `[(token, original)]` (`places` table). `make_rev_finder` gives an unchanged place its exact forms regardless of order/file; changed text (an LLM reply) gets the main form and counts `check_case`; unknown tokens are reported (`result['restore']`). Token parsing is tolerant (`TOKEN_LOOSE_RE`).
+**Restore by place**: while anonymizing, `make_finder(..., places=)` stores per paragraph/cell a fingerprint of its anonymized text + `[(token, original)]` (`places` table). `make_rev_finder` gives an unchanged place its exact forms regardless of order/file; changed text (an LLM reply): persons are declined by [core/cases.py](core/cases.py) (`target_case` from the left word, apposition, coordination; `decline` by endings; undecided places → one short LLM request in `find.prepare`, only the case is taken) and counted in `check_case`; companies get «» and the legal form when standing alone (`org_in_new_text`, [core/settings.py](core/settings.py)). Values come back as `Restored` with `.mark` (exact / case): yellow highlight of «case» places in Word (own run, copied `w:rPr`) and the coloured restore preview (`restore_marks/`). The value goes into the run holding most of the token. Unknown tokens are reported (`result['restore']`). Token parsing is tolerant (`TOKEN_LOOSE_RE`).
 
 ### Lexicon and the LLM
 [core/lexicon.py](core/lexicon.py): roles of parties, positions, headings, public bodies, «all words ordinary» — never masked by any layer (manual additions excepted). LLM dates only with birth context.
@@ -69,6 +70,8 @@ Text-level API: `anonymize_text()` / `restore_text()` (used by the bench and tes
 - RTF: [core/rtf.py](core/rtf.py) decodes `\'hh`/`\uN` with a char→raw-bytes map; only text bytes are rewritten.
 - PDF: words with positions; lines of a block joined by space; redaction with token text sized to fit. Scans → OCR.
 - Images and scanned pages: [core/ocr.py](core/ocr.py) (Apple Vision, macOS only), black boxes with token, EXIF dropped. Not reversible.
+- PDF with a readable text layer and no big page images (`pdf_is_digital`) → DOCX via pdf2docx (`_pdf_to_docx`, `_unglue_line_ends` puts back spaces pdf2docx drops), processed as DOCX; setting `keep_pdf` adds the anonymized PDF. Scans stay PDF.
+- A value found whole in one place but cut by a paragraph break elsewhere is added by `_broken_occurrences` and masked part by part.
 - DOC/ODT: converted to DOCX via `textutil` (macOS) or LibreOffice, then `ooxml.normalize_wordml` fixes textutil's non-standard markup (Word «unreadable content»).
 - Replacement everywhere goes through `replace_spans`/`replace_bounded` (boundaries: letters for words, digits for numbers) — never `str.replace`. A value across a paragraph break is split into lines with the same token (`handlers._split_lines`); after writing, `_verify_written` re-reads the file — a value still present is `apply_errors`, never a silent skip.
 - PDF pages with a broken OCR text layer (`text_layer_ok`) are cleaned and re-OCRed; OCR text is assembled by `ocr.layout` (columns, rows, wrapped lines).

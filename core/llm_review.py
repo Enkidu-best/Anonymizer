@@ -120,7 +120,7 @@ def ask(part: list, lines: str) -> dict:
     """One request: a batch of found values and a block of suspicious lines → changes."""
     found = '\n'.join(f'{i}. «{e["value"]}» — контекст: {e["context"] or "-"}' for i, e in enumerate(part, 1))
     prompt = f'НАЙДЕНО:\n{found or "-"}\n\nСТРОКИ:\n{lines.strip() or "-"}'
-    raw = llm._ollama_generate(prompt, REVIEW_SYSTEM, timeout=120, schema=REVIEW_SCHEMA, num_predict=400)
+    raw = llm._ollama_generate(prompt, REVIEW_SYSTEM, timeout=120, schema=REVIEW_SCHEMA, num_predict=700)
     data = json.loads(raw)
     return {'drop': [i for i in data.get('drop') or [] if isinstance(i, int)],
             'merge': [p for p in data.get('merge') or [] if isinstance(p, list) and len(p) == 2
@@ -245,6 +245,13 @@ def review(original_text: str, masked_text: str, mappings: list, budget_s: float
         etype = _TYPE.get(str(e['type']).upper())
         if etype is None or e['text'] in known or not_pii(e['text'], etype):
             continue   # unknown types («date») and roles are never added
+        if is_role_or_position(e['text']) or is_public_body(e['text']):
+            continue   # the LLM sometimes types a public body as a person
+        if etype == 'ФИО':
+            from core.lexicon import name_like, _WORD
+            ws = [w for w in _WORD.findall(e['text']) if len(w) > 1]
+            if not ws or not all(name_like(w) for w in ws):
+                continue   # «Государственная фельдъегерская служба …» is not a person
         if etype in ('ТЕЛЕФОН', 'ИНН', 'ОГРН', 'РС') and len(re.sub(r'\D', '', e['text'])) < 7:
             continue
         if etype in ('ДАТАРОЖД',) and not llm._birth_context(original_text, e['text']):

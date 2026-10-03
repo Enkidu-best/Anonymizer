@@ -72,7 +72,7 @@ def test_review_short_answer_is_filtered(monkeypatch):
     assert [r['token'] for r in out['remove']] == ['FIO_1']
     assert out['merge'] == [{'token': 'FIO_2', 'into': 'FIO_3'}]
     assert out['add'] == [{'value': 'Агафонов', 'type': 'ФИО'}]
-    assert seen['num_predict'] <= 400 and 'drop' in seen['schema']['properties']
+    assert seen['num_predict'] <= 700 and 'drop' in seen['schema']['properties']
 
 
 def test_llm_never_unmasks_a_real_address_part():
@@ -80,3 +80,17 @@ def test_llm_never_unmasks_a_real_address_part():
     assert _safe_to_unmask('Общая площадь кв.м', 'АДРЕС')
     assert not _safe_to_unmask('Тверская область, Конаковский район', 'АДРЕС')
     assert not _safe_to_unmask('г. Тверь, ул. Озёрная', 'АДРЕС')
+
+
+def test_llm_additions_of_public_bodies_typed_as_persons_dropped(monkeypatch):
+    import json as _j
+    from core import llm_review
+    monkeypatch.setattr(llm, 'check_ollama', lambda: {'available': True})
+    monkeypatch.setattr(llm, '_ollama_generate', lambda *a, **k: _j.dumps({'drop': [], 'merge': [], 'add': [
+        {'text': 'Федеральная служба безопасности Российской Федерации', 'type': 'FIO'},
+        {'text': 'Государственная фельдъегерская служба Российской Федерации', 'type': 'FIO'},
+        {'text': 'Агафонов', 'type': 'FIO'}]}))
+    masked = ('Федеральная служба безопасности Российской Федерации и Государственная фельдъегерская служба '
+              'Российской Федерации; Агафонов «Соседи» тоже.')
+    out = llm_review.review(masked, masked, [], budget_s=10)
+    assert [a['value'] for a in out['add']] == ['Агафонов']
