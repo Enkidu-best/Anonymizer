@@ -115,6 +115,14 @@ def init_db(db_path):
                 new_token  TEXT NOT NULL,
                 PRIMARY KEY (session_id, old_token)
             )''')
+        # «Это разные»: pairs of tokens the user said are different entities (task 3, §5.4)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS distinct_pairs (
+                session_id TEXT NOT NULL,
+                a          TEXT NOT NULL,
+                b          TEXT NOT NULL,
+                PRIMARY KEY (session_id, a, b)
+            )''')
         cols = {r[1] for r in conn.execute('PRAGMA table_info(mappings)')}
         if 'status' not in cols:
             conn.execute("ALTER TABLE mappings ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
@@ -199,6 +207,7 @@ def delete_session(db_path, session_id: str):
         conn.execute('DELETE FROM places WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM place_forms WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM token_aliases WHERE session_id=?', (session_id,))
+        conn.execute('DELETE FROM distinct_pairs WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM mappings    WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM exclusions  WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM sessions    WHERE id=?',         (session_id,))
@@ -247,6 +256,7 @@ _PREFIX = {
     'НИК':      'NICK',
     'НОТАРИУС': 'NOT',
     'НЕДВИЖ':   'REALTY',
+    'ЕГРН':     'EGRN',
     'РЕГНОМЕР': 'REG',
     'FIO':      'FIO',
     'YUL':      'YUL',
@@ -281,7 +291,7 @@ def _same_entity_token(conn, session_id, original, etype):
     Persons: same surname (any case/gender form) with compatible name/initials;
     a lone surname joins only if exactly one known person has it.
     Other types: same normalized value (digits for numbers, word lemmas for companies)."""
-    from core.entities import Person, value_key
+    from core.entities import Person
     rows = conn.execute("SELECT token, original_form FROM mappings WHERE session_id=? AND entity_type=? "
                         "AND status='active'", (session_id, etype)).fetchall()
     if not rows:
@@ -303,23 +313,71 @@ def _same_entity_token(conn, session_id, original, etype):
             # several namesakes: the most specific compatible one
             return max(cands, key=cands.get)
         return None
-    key = value_key(original, etype)
-    if not key:
+    # numbers: digits (+ series letters); companies: without legal form, quotes, case, ё,
+    # spaces, or the same word lemmas; addresses: normalized parts (task 3, §1.1)
+    from core.entities import merge_key, org_key
+    key = merge_key(original, etype)
+    if not key or (etype == 'ЮЛ' and len(key) < 4):
         return None
-    from core.entities import compact_key
-    compact = compact_key(original) if etype == 'ЮЛ' else None
+    lemmas = org_key(original) if etype == 'ЮЛ' else None
     for r in rows:
-        if value_key(r['original_form'], etype) == key:
+        if merge_key(r['original_form'], etype) == key:
             return r['token']
-        # company names after OCR: a space or soft hyphen inside a word («ВекторФ уд»)
-        if compact and len(compact) >= 5 and compact_key(r['original_form']) == compact:
+        if lemmas and org_key(r['original_form']) == lemmas:
             return r['token']
     return None
 
 
+def find_same_entity(db_path, session_id: str, original: str, entity_type: str):
+    """Active token whose entity this value already is (same row or another form), else None —
+    the «Такое значение уже есть» check for manual add and edit (task 3, §1.2)."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token FROM mappings WHERE session_id=? AND original_form=? "
+                           "AND entity_type=? AND status='active'",
+                           (session_id, original, entity_type)).fetchone()
+        if row:
+            return row['token']
+        return _same_entity_token(conn, session_id, original, entity_type)
+
+
+def _mark_distinct(conn, session_id, a, b):
+    a, b = sorted((a, b))
+    conn.execute('INSERT OR IGNORE INTO distinct_pairs (session_id, a, b) VALUES (?,?,?)', (session_id, a, b))
+
+
+def mark_distinct(db_path, session_id: str, a: str, b: str):
+    """«Это разные»: never merged automatically, never proposed again."""
+    with get_conn(db_path) as conn:
+        _mark_distinct(conn, session_id, a, b)
+
+
+def get_distinct_pairs(db_path, session_id: str) -> set:
+    with get_conn(db_path) as conn:
+        rows = conn.execute('SELECT a, b FROM distinct_pairs WHERE session_id=?', (session_id,)).fetchall()
+    return {frozenset((r['a'], r['b'])) for r in rows}
+
+
+def consolidate_session(db_path, session_id: str) -> dict:
+    """End-of-processing check (task 3, §1.1): tokens that are one entity by the automatic
+    rules are merged into the lowest one; returns {old_token: kept_token}. Old tokens stay
+    aliases, so files downloaded earlier still restore."""
+    from core.entities import auto_groups
+    merged = {}
+    for group in auto_groups(get_session_mappings(db_path, session_id),
+                             get_distinct_pairs(db_path, session_id)):
+        for t in group[1:]:
+            merge_tokens(db_path, session_id, t, group[0])
+            merged[t] = group[0]
+    return merged
+
+
 def get_or_create_token(db_path, session_id: str,
                         original_form: str, canonical_form: str,
-                        entity_type: str, canonical_edited: bool = False, manual: bool = False) -> str:
+                        entity_type: str, canonical_edited: bool = False, manual: bool = False,
+                        separate: bool = False) -> str:
+    """Token for a value: the same row, another form of a known entity, or a new token.
+    separate=True («Всё равно добавить отдельно»): a new token even if the value looks like a
+    known entity; the pair is remembered as different so the end-of-processing check keeps it."""
     with get_conn(db_path) as conn:
         row = conn.execute(
             'SELECT token, status FROM mappings '
@@ -333,10 +391,13 @@ def get_or_create_token(db_path, session_id: str,
             return row['token']
 
         token = _same_entity_token(conn, session_id, original_form, entity_type)
-        if token is None:
+        like = token if separate else None
+        if token is None or separate:
             prefix = _PREFIX.get(entity_type, entity_type.upper())
             n = _next_token_number(conn, session_id, prefix)
             token = f'{prefix}_{n}'
+        if like:
+            _mark_distinct(conn, session_id, like, token)
 
         conn.execute(
             'INSERT OR IGNORE INTO mappings '

@@ -343,6 +343,45 @@ def _cadastral(text):
 
 
 
+# ── EGRN registration record: one token for the whole number (task 3, §1.3) ──
+# new format: cadastral number «-» NN/NNN/YYYY-N; old: NN-NN/NN-NNN/YYYY-NNNN (and
+# NN-NN-NN/NNN/YYYY-NNN). One space is allowed around the hyphens («…:1234- 71/022/2020-18»).
+_H = r'[^\S\n]?-[^\S\n]?'
+_EGRN = re.compile(
+    r'(?<![\d:/\-])(?:'
+    r'\d{2}:\d{2}:\d{6,7}:\d{1,6}' + _H + r'\d{2}/\d{3}/(?:19|20)\d{2}' + _H + r'\d{1,6}'
+    r'|\d{2}-\d{2}[/\-]\d{2}[/\-]\d{2,3}/(?:19|20)\d{2}' + _H + r'\d{1,6}'
+    r')(?![\d/:])')
+
+
+def _egrn(text):
+    return [Hit(m.start(), m.end(), 'ЕГРН') for m in _EGRN.finditer(text)]
+
+
+# A found free-form number goes on through «-», «/», «.», «:» and digits (no space, or one
+# space after a hyphen) — the rest of a composite identifier. Fixed-length checksum numbers
+# (ИНН, ОГРН, счета…) are whole already: «ИНН/КПП 7707083893/770701001» must stay two.
+_EXTENDABLE = {'КАДАСТР', 'НЕДВИЖ', 'РЕГНОМЕР', 'ЕГРН', 'ЛИЦЕНЗИЯ'}
+_CONT = re.compile(r'(?:-[^\S\n]?|[/.:])\d+')
+
+
+def _extend_numbers(text, hits):
+    starts = sorted(h.start for h in hits)
+    out = []
+    for h in hits:
+        end = h.end
+        if h.type in _EXTENDABLE:
+            while True:
+                m = _CONT.match(text, end)
+                if not m or re.match(r'[\wА-Яа-яЁё]', text[m.end():m.end() + 1]):
+                    break
+                if any(end <= s < m.end() for s in starts if s != h.start):
+                    break        # another number begins there
+                end = m.end()
+        out.append(Hit(h.start, end, h.type) if end != h.end else h)
+    return out
+
+
 # ── Real estate: registration records, certificates, conditional numbers ─────
 
 _REG_CTX = re.compile(r'регистрац|услов\w*[^\S\n]+номер|инвентарн\w*[^\S\n]+номер|кадастров|запис\w*[^\S\n]+(?:в[^\S\n]+)?ЕГРН', _I)
@@ -651,7 +690,7 @@ def _persons(text: str) -> List[Hit]:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-DETECTORS = [_passport, _realty, _keyword_numbers, _company_reg, _grouped_numbers, _spaced_numbers, _phones, _numeric, _swift, _birth,
+DETECTORS = [_egrn, _passport, _realty, _keyword_numbers, _company_reg, _grouped_numbers, _spaced_numbers, _phones, _numeric, _swift, _birth,
              _cadastral, _other, _addresses, _orgs, _persons]
 
 
@@ -659,4 +698,4 @@ def find_all(text: str) -> List[Hit]:
     out = []
     for det in DETECTORS:
         out.extend(det(text))
-    return out
+    return _extend_numbers(text, out)

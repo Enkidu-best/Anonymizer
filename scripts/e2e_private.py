@@ -87,6 +87,15 @@ def main():
     (out / 'report.md').write_text('\n'.join(lines), encoding='utf-8')
     (out / 'report.json').write_text(json.dumps([r for *_, r, __ in [(m, n, rep, e) for m, n, rep, e in rows]],
                                                 ensure_ascii=False, indent=1), encoding='utf-8')
+    # §1.1: after processing the base must hold no group the automatic rules would merge
+    import sqlite3
+    from scripts.audit_db import groups, proposals
+    con = sqlite3.connect(f'file:{app.DB_PATH}?mode=ro', uri=True)
+    rows = con.execute("SELECT session_id, token, entity_type, original_form FROM mappings "
+                       "WHERE status='active'").fetchall()
+    dup, prop = groups(rows), sum(len(v) for v in proposals(rows).values())
+    print(f'Дубли в базе после прогона: автоматически {len(dup)}, предложить человеку {prop}')
+    totals['errors'] += len(dup)
     print(f'\nОтчёт: {out / "report.md"}  ошибок: {totals["errors"]}')
     return 1 if totals['errors'] else 0
 

@@ -258,7 +258,7 @@ tr:hover td{background:var(--card2)}
 .t-ADR{background:rgba(20,184,166,.12);color:#2dd4bf}
 .t-LIC{background:rgba(239,68,68,.12);color:#f87171}
 .t-URL{background:rgba(14,165,233,.12);color:#38bdf8}
-.t-REALTY,.t-CAD{background:rgba(34,197,94,.12);color:#4ade80}
+.t-REALTY,.t-CAD,.t-EGRN{background:rgba(34,197,94,.12);color:#4ade80}
 .t-CARD,.t-IBAN{background:rgba(236,72,153,.12);color:#f472b6}
 .t-REG,.t-OKPO{background:rgba(16,212,114,.12);color:#34d399}
 .t-CAR,.t-VIN,.t-DL,.t-OMS,.t-NICK,.t-NOT{background:rgba(167,139,250,.12);color:#a78bfa}
@@ -519,6 +519,7 @@ tr:hover td{background:var(--card2)}
     <input type="text" class="modal-inp hidden" id="modalInput" placeholder="">
     <div class="modal-btns">
       <button class="btn-modal-cancel" onclick="closeModal(false)">Отмена</button>
+      <button class="btn-modal-cancel hidden" id="modalAltBtn" onclick="closeModal('alt')"></button>
       <button class="btn-modal-ok" id="modalOkBtn" onclick="closeModal(true)">OK</button>
     </div>
   </div>
@@ -584,6 +585,7 @@ tr:hover td{background:var(--card2)}
       <option value="SWIFT">SWIFT</option>
       <option value="ЛИЦЕНЗИЯ">Лицензия ЦБ</option>
       <option value="URL">URL</option>
+      <option value="ЕГРН">Номер записи ЕГРН</option>
       <option value="НЕДВИЖ">Недвижимость: рег. запись / свидетельство</option>
       <option value="КАДАСТР">Кадастровый номер</option>
       <option value="КАРТА">Банковская карта</option>
@@ -761,7 +763,7 @@ function renderSessions() {
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
-function showModal({title, sub='', placeholder='', defaultVal='', okLabel='OK', okDanger=false, hasInput=true}) {
+function showModal({title, sub='', placeholder='', defaultVal='', okLabel='OK', okDanger=false, hasInput=true, altLabel=''}) {
   return new Promise(resolve => {
     S._modalResolve = resolve;
     $('modalTitle').textContent   = title;
@@ -771,6 +773,8 @@ function showModal({title, sub='', placeholder='', defaultVal='', okLabel='OK', 
     $('modalInput').value         = defaultVal;
     $('modalInput').classList.toggle('hidden', !hasInput);
     $('modalOkBtn').textContent   = okLabel;
+    $('modalAltBtn').textContent  = altLabel;
+    $('modalAltBtn').classList.toggle('hidden', !altLabel);
     $('modalOkBtn').className     = 'btn-modal-ok' + (okDanger ? ' danger' : '');
     $('modalOverlay').classList.remove('hidden');
     if (hasInput) setTimeout(() => { $('modalInput').focus(); $('modalInput').select(); }, 50);
@@ -780,7 +784,8 @@ function showModal({title, sub='', placeholder='', defaultVal='', okLabel='OK', 
 function closeModal(confirmed) {
   $('modalOverlay').classList.add('hidden');
   if (S._modalResolve) {
-    const val = confirmed ? ($('modalInput').classList.contains('hidden') ? true : $('modalInput').value.trim()||null) : null;
+    const val = confirmed === 'alt' ? 'alt' :
+      confirmed ? ($('modalInput').classList.contains('hidden') ? true : $('modalInput').value.trim()||null) : null;
     S._modalResolve(val);
     S._modalResolve = null;
   }
@@ -1365,17 +1370,30 @@ function closeEditMapModal(confirmed) {
 }
 
 // Mapping CRUD
+// «Такое значение уже есть»: the server answers 409 with the entry this value belongs to
+// (task 3, §1.2). Returns the saved record, or null when the user cancelled.
+async function saveMappingChecked(url, method, data) {
+  const send = d => fetch(url, {method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(d)});
+  let r = await send(data);
+  if (r.status === 409) {
+    const d = (await r.json()).duplicate || {};
+    const ch = await showModal({title:'Такое значение уже есть', sub:`[${d.token}] ${d.value}`,
+      hasInput:false, okLabel:'Объединить с ним', altLabel:'Всё равно добавить отдельно'});
+    if (!ch) return null;
+    r = await send({...data, on_duplicate: ch === 'alt' ? 'separate' : 'merge'});
+  }
+  if (!r.ok) { let msg=`HTTP ${r.status}`; try{const d=await r.json(); msg=d.error||msg;}catch{} throw new Error(msg); }
+  return r.json();
+}
+
 async function addMappingManual() {
   if (!S.active) return;
   const data = await openEditMapModal({title:'Добавить запись'});
   if (!data || !data.entity_type) return;
   if (!data.original_form && !data.canonical_form) { toast('Заполните хотя бы одно поле','err'); return; }
   try {
-    const r = await apiFetch(`/api/sessions/${S.active.id}/mappings`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data)
-    });
+    const r = await saveMappingChecked(`/api/sessions/${S.active.id}/mappings`, 'POST', data);
+    if (!r) return;
     toast(`Добавлено: ${r.token}`, 'ok');
     await loadMappings();
     await doReprocess();
@@ -1394,11 +1412,8 @@ async function editMapping(token, originalForm, entityType) {
   });
   if (!data) return;
   try {
-    const r = await apiFetch(`/api/sessions/${S.active.id}/mappings/${encodeURIComponent(token)}`, {
-      method:'PATCH',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data)
-    });
+    const r = await saveMappingChecked(`/api/sessions/${S.active.id}/mappings/${encodeURIComponent(token)}`, 'PATCH', data);
+    if (!r) return;
     toast(`Обновлено: ${r.new_token || token}`, 'ok');
     await loadMappings();
     await doReprocess();
@@ -1438,7 +1453,7 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function fmtDate(dt){if(!dt)return'—';try{return new Date(dt).toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'});}catch{return dt;}}
 function fmtSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB';}
 function fileIcon(n){const e=n.split('.').pop().toLowerCase();return{txt:'📄',docx:'📝',pdf:'📕',xlsx:'📊',rtf:'📋'}[e]||'📄';}
-const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.',LIC:'Лицензия ЦБ',URL:'URL',REALTY:'Недвижимость',CAD:'Кадастр',CARD:'Карта',IBAN:'IBAN',REG:'Рег. номер',CAR:'Госномер',VIN:'VIN',DL:'Вод. удост.',OMS:'Полис ОМС',OKPO:'ОКПО',NICK:'Ник',NOT:'Нотариус'};
+const TL={FIO:'ФИО',YUL:'Организация',INN:'ИНН',OGRN:'ОГРН',KPP:'КПП',RS:'Р/С',KS:'К/С',BIK:'БИК',TEL:'Телефон',EMAIL:'Email',PASSPORT:'Паспорт',SNILS:'СНИЛС',SWIFT:'SWIFT',ADR:'Адрес',DOB:'Дата рожд.',LIC:'Лицензия ЦБ',URL:'URL',REALTY:'Недвижимость',EGRN:'Запись ЕГРН',CAD:'Кадастр',CARD:'Карта',IBAN:'IBAN',REG:'Рег. номер',CAR:'Госномер',VIN:'VIN',DL:'Вод. удост.',OMS:'Полис ОМС',OKPO:'ОКПО',NICK:'Ник',NOT:'Нотариус'};
 function tokenLabel(p){return TL[p]||p;}
 function toast(msg,type='info'){const c=document.getElementById('toasts');const el=document.createElement('div');el.className='toast '+type;el.innerHTML=`<span>${{ok:'✅',err:'❌',info:'ℹ️'}[type]}</span><span>${esc(msg)}</span>`;c.appendChild(el);setTimeout(()=>el.remove(),4500);}
 

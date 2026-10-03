@@ -287,6 +287,11 @@ def update_mapping_route(sid, token):
     new_type      = (data.get('entity_type',    old['entity_type'])).strip()
     from core.db import update_mapping, retire_mapping
     from core import log
+    choice = data.get('on_duplicate')       # None → ask; 'merge' / 'separate'
+    if (new_original != old['original_form'] or new_type != old['entity_type']) and not choice:
+        dup = _duplicate_of(sid, new_original, new_type, exclude=token)
+        if dup:
+            return jsonify({'duplicate': dup}), 409
     if new_original == old['original_form'] and new_type == old['entity_type']:
         # only the base form changed: same token, nothing to re-detect
         if new_canonical != old['canonical_form']:
@@ -300,7 +305,7 @@ def update_mapping_route(sid, token):
     retire_mapping(DB_PATH, sid, token)
     edited = bool(old.get('canonical_edited')) or new_canonical != old['canonical_form']
     new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type,
-                                    canonical_edited=edited)
+                                    canonical_edited=edited, separate=choice == 'separate')
     log.event('mapping_edit', token=token, action='replace', new_token=new_token)
     # User explicitly confirmed this entity — remember globally for future sessions
     remember_entity(DB_PATH, new_original, new_type)
@@ -323,14 +328,54 @@ def add_mapping_route(sid):
         original = canonical
     if not original:
         return jsonify({'error': 'original_form или canonical_form обязательны'}), 400
+    choice = data.get('on_duplicate')       # None → ask; 'merge' / 'separate'
+    if not choice:
+        dup = _duplicate_of(sid, original, entity_type)
+        if dup:
+            return jsonify({'duplicate': dup}), 409
     token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type,
-                                canonical_edited=edited, manual=True)
+                                canonical_edited=edited, manual=True, separate=choice == 'separate')
     # Manually added → strong signal this is real PII. Cross-session learn.
     remember_entity(DB_PATH, original, entity_type)
     return jsonify({'token': token, 'original_form': original,
                     'canonical_form': canonical, 'entity_type': entity_type}), 201
 
 
+
+
+def _duplicate_of(sid, original, entity_type, exclude=None):
+    """«Такое значение уже есть: [ADR_2] …» (task 3, §1.2): the active entry this value
+    already belongs to by the automatic rules, or None."""
+    from core.db import find_same_entity, get_session_mappings
+    tok = find_same_entity(DB_PATH, sid, original, entity_type)
+    if not tok or tok == exclude:
+        return None
+    forms = [m for m in get_session_mappings(DB_PATH, sid) if m['token'] == tok]
+    if not forms:
+        return None
+    return {'token': tok, 'value': forms[0]['canonical_form'] or forms[0]['original_form'],
+            'entity_type': forms[0]['entity_type']}
+
+
+@app.route('/api/sessions/<sid>/duplicates', methods=['GET'])
+def session_duplicates(sid):
+    """«Проверка дублей»: pairs proposed to a human (never numbers), minus «Это разные»."""
+    from core.db import get_session_mappings, get_distinct_pairs
+    from core.entities import review_pairs
+    return jsonify(review_pairs(get_session_mappings(DB_PATH, sid), get_distinct_pairs(DB_PATH, sid)))
+
+
+@app.route('/api/sessions/<sid>/distinct', methods=['POST'])
+def mark_distinct_route(sid):
+    """«Это разные»: the pair is remembered and not proposed or merged again."""
+    from core.db import mark_distinct
+    data = request.get_json(force=True, silent=True) or {}
+    pairs = data.get('pairs') or [[data.get('a'), data.get('b')]]
+    for a, b in pairs:
+        if a and b and a != b:
+            mark_distinct(DB_PATH, sid, a, b)
+            journal.event('mapping_edit', token=a, action='distinct', other=b)
+    return jsonify({'ok': True})
 
 
 def _manifest(session_dir: Path) -> dict:
@@ -654,8 +699,9 @@ def preview_file(sid, filename):
             out['kind'] = 'pdf'
             out['pages'] = len(pymupdf.open(str(path)))
         out['leaks'] = leak_check(path, sid, DB_PATH)
-    from core.entities import similar_pairs
-    out['similar'] = similar_pairs(get_session_mappings(DB_PATH, sid))
+    from core.entities import review_pairs
+    from core.db import get_distinct_pairs
+    out['similar'] = review_pairs(get_session_mappings(DB_PATH, sid), get_distinct_pairs(DB_PATH, sid))
     return jsonify(out)
 
 

@@ -33,6 +33,17 @@ def anonymize(text):
     return out, restore_text(out, db, sid, occ)
 
 
+def _tail_left(value, text, out, keep):
+    """Part of a masked number left next to its token («[CAD_3]- 71/022/2020-18»): a run of
+    3+ digits of the value still in the output (outside tokens and the must-keep strings)."""
+    import re
+    rest = re.sub(r'\[[A-Z]+_\d+\]', ' ', out)
+    other = text.replace(value, ' ')     # the same digits elsewhere in the input («доб. 123»)
+    for k in keep:
+        rest, other = rest.replace(k, ' '), other.replace(k, ' ')
+    return any(run in rest and run not in other for run in re.findall(r'\d{3,}', value))
+
+
 def main():
     if USE_NER:
         import core.anonymizer as A
@@ -42,7 +53,7 @@ def main():
     for cat, text, mask, keep in C:
         with contextlib.redirect_stdout(io.StringIO()):
             out, back = anonymize(text)
-        leaked = [m for m in mask if m in out]
+        leaked = [m for m in mask if m in out or _tail_left(m, text, out, keep)]
         lost = [k for k in keep if k not in out]
         s = stats[cat]
         s[0] += 1

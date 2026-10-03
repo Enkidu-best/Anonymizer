@@ -418,3 +418,33 @@ def test_preview_and_auto_session_name(page, server, tmp_path):
     page.keyboard.press('Escape')
     names = page.evaluate("async () => (await (await fetch('/api/sessions')).json()).map(s => s.name)")
     assert any(n.startswith('Договор_проверка · ') for n in names), names
+
+
+def test_manual_add_duplicate_warning(page, server):
+    """Task 3, §1.2: adding a value already in the session asks what to do."""
+    sid = _make_session(page, 'Дубли')
+
+    def add(value):
+        page.click('#btnAddManual')
+        page.fill('#editMapOriginal', value)
+        page.select_option('#editMapType', 'АДРЕС')
+        page.click('#editMapOkBtn')
+
+    # the button is active once the session has records (after the first processing)
+    page.evaluate('''async (sid) => {
+        await fetch(`/api/sessions/${sid}/mappings`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({original_form: 'г. Москва, ул. Лесная, д. 5', entity_type: 'АДРЕС'})});
+        await loadMappings();
+    }''', sid)
+    page.wait_for_function('S.mappings && S.mappings.length === 1')
+    add('г.Москва, ул.Лесная, д.5')
+    page.wait_for_selector('#modalOverlay:not(.hidden)')
+    assert 'Такое значение уже есть' in page.inner_text('#modalTitle')
+    assert '[ADR_1]' in page.inner_text('#modalSub')
+    page.click('#modalAltBtn')                      # «Всё равно добавить отдельно»
+    page.wait_for_function('new Set(S.mappings.map(m => m.token)).size === 2')
+    add('город Москва, улица Лесная, дом 5')
+    page.wait_for_selector('#modalOverlay:not(.hidden)')
+    page.click('#modalOverlay .btn-modal-cancel >> nth=0')    # «Отмена»
+    page.wait_for_timeout(300)
+    assert page.evaluate('S.mappings.length') == 2

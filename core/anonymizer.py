@@ -95,7 +95,7 @@ def _p(pattern):
 _TOKEN_PREFIXES = (
     'FIO', 'YUL', 'INN', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
     'PASSPORT', 'TEL', 'EMAIL', 'SWIFT', 'ADR', 'DOB', 'LIC', 'URL',
-    'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT', 'REALTY', 'REG',
+    'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT', 'REALTY', 'EGRN', 'REG',
     'ДАТАРОЖД',
 )
 _TOKEN_PFX_ALT = '|'.join(_TOKEN_PREFIXES)
@@ -1140,6 +1140,14 @@ def anonymize_text_pipeline(
         run('propagate_orgs', _propagate_orgs, db_path, session_id, exclusions)
         run('propagate_surnames', _propagate_surnames, db_path, session_id, exclusions)
     run('known_session', _apply_known_entities, db_path, session_id)
+    # end-of-processing check of the base: one entity written several ways → one token
+    from core.db import consolidate_session
+    with log.stage('consolidate'):
+        merged = consolidate_session(db_path, session_id)
+    if merged:
+        log.event('layer', layer='consolidate', merged=len(merged))
+        all_reps = {k: merged.get(v, v) for k, v in all_reps.items()}
+        text = re.sub('|'.join(map(re.escape, merged)), lambda m: merged[m.group(0)], text)
     return text, all_reps
 
 
