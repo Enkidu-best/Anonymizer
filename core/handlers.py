@@ -807,6 +807,41 @@ def _anon_pdf(src, out, session_id, db_path, use_spacy, use_llm):
     return {'entities_found': len(reps), 'ocr_pages': sum(p[0] == 'ocr' for p in pages)}
 
 
+def _box_under(r, boxes):
+    """The black box a token label sits on (starts at the label, covers its middle)."""
+    best = None
+    for b in boxes:
+        if b.contains(pymupdf_point(r)) and abs(b.x0 - r.x0) < 3:
+            if best is None or b.width > best.width:
+                best = b
+    return best
+
+
+def _has_words(box, words) -> bool:
+    import pymupdf
+    return any(box.contains(pymupdf_point(pymupdf.Rect(w[:4]))) for w in words)
+
+
+def _split_value(value: str, boxes) -> list:
+    """Words of a value shared out between its boxes in proportion to their widths."""
+    words = value.split()
+    if len(boxes) == 1 or len(words) < 2:
+        return [value] + [''] * (len(boxes) - 1)
+    total = sum(b.width for b in boxes)
+    out, start, acc = [], 0, 0.0
+    for i, b in enumerate(boxes):
+        acc += b.width
+        end = len(words) if i == len(boxes) - 1 else max(start, min(len(words), round(len(words) * acc / total)))
+        out.append(' '.join(words[start:end]))
+        start = end
+    return out
+
+
+def pymupdf_point(r):
+    import pymupdf
+    return pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+
+
 def _deanon_pdf(src, out, find):
     import pymupdf
     doc = pymupdf.open(str(src))
@@ -818,7 +853,12 @@ def _deanon_pdf(src, out, find):
         if not hits:
             continue
         base = _detect_avg_fontsize(page)
-        todo = []
+        # black boxes of an anonymized scan: the token label is small, the box under it is
+        # the size of the original value — the restored value must fill the box, not the label
+        # (black on a scan, white over a text layer — any filled one-line rectangle)
+        boxes = [d['rect'] for d in page.get_drawings()
+                 if d.get('fill') is not None and d['rect'].width > 4 and d['rect'].height < 40]
+        todo, claimed = [], []
         for s, e, orig in hits:
             idxs = sorted({owner[k] for k in range(s, e) if owner[k] is not None})
             if not idxs:
@@ -826,22 +866,50 @@ def _deanon_pdf(src, out, find):
             r = pymupdf.Rect(words[idxs[0]][:4])
             for i in idxs[1:]:
                 r |= pymupdf.Rect(words[i][:4])
-            page.add_redact_annot(r, fill=(1, 1, 1))
-            todo.append((r, orig))
-        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+            box = _box_under(r, boxes)
+            if box is not None and any(box.contains(pymupdf_point(pymupdf.Rect(w[:4])))
+                                       for k, w in enumerate(words) if k not in idxs):
+                box = None     # a shaded table cell with other text, not a redaction box
+            if box is None:
+                page.add_redact_annot(r, fill=(1, 1, 1))
+                todo.append((r, orig, False))
+                continue
+            # a value wrapped to the next line has a second box without a label
+            chain = [box]
+            while len(chain) < 6:            # an address may wrap over several lines
+                last = chain[-1]
+                nxt = [b for b in boxes if b not in chain and b not in claimed and not _has_words(b, words)
+                       and last.y1 - last.height * 0.5 <= b.y0 <= last.y1 + last.height * 0.6
+                       and b.x0 <= last.x0 + 2]
+                if not nxt:
+                    break
+                # two columns: the line goes on in the nearest box to the left (its own column)
+                chain.append(max(nxt, key=lambda b: b.x0))
+            claimed.extend(chain)
+            parts = _split_value(orig, chain)
+            for b, part in zip(chain, parts):
+                page.add_redact_annot(b + (-0.6, -0.6, 0.6, 0.6), fill=(1, 1, 1))
+                todo.append((b, part, True))
+        # the boxes of the anonymized file go too (not only covered in white)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                              graphics=getattr(pymupdf, 'PDF_REDACT_LINE_ART_REMOVE_IF_COVERED', 1))
         if not font:
             missing_font = True
             continue
         page.insert_font(fontname='CyrF', fontfile=font)
         cyr = pymupdf.Font(fontfile=font)
-        for r, orig in todo:
+        for r, orig, in_box in todo:
+            if not orig:
+                continue
             # ASCII values (phones, numbers) in Helvetica: Arial maps «-» to a soft hyphen on copy
             ascii_only = orig.isascii()
             fname = 'helv' if ascii_only else 'CyrF'
             width = (pymupdf.get_text_length(orig, fontname='helv', fontsize=1) if ascii_only
                      else cyr.text_length(orig, fontsize=1))
-            fs = max(min(base * 0.88, r.width / max(width, 0.01)), 4)
-            page.insert_text((r.x0, r.y1 - r.height * 0.2), orig, fontname=fname, fontsize=fs)
+            top = r.height * 0.78 if in_box else base * 0.88     # a box is one line of the scan
+            fs = max(min(top, r.width / max(width, 0.01)), 6 if in_box else 4)
+            page.insert_text((r.x0 + (1 if in_box else 0), r.y1 - r.height * 0.22), orig,
+                             fontname=fname, fontsize=fs)
     doc.save(str(out), garbage=4, deflate=True)
     return {'_pdf_no_font': missing_font}
 

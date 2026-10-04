@@ -126,3 +126,26 @@ def test_value_cut_by_paragraph_break_elsewhere(tmp_path, tmp_db, session_id):
     rr = process_uploaded_file(tmp_path / 'o' / r['output_filename'], tmp_path / 'b', session_id, tmp_db, 'deanonymize')
     back = [p.text for p in Document(tmp_path / 'b' / rr['output_filename']).paragraphs]
     assert back == [p.text for p in d.paragraphs]
+
+
+def test_scan_restore_fills_the_black_box(tmp_path, tmp_db, session_id):
+    """A restored value in a scan is written into the whole black box, not shrunk to the
+    width of the small «[FIO_1]» label (owner, v3.4.0: «очень маленький шрифт»)."""
+    import pymupdf
+    import pytest
+    from core import ocr
+    if not ocr.available():
+        pytest.skip('OCR is macOS only')
+    src = _scan_pdf(tmp_path / 'scan.pdf')
+    (tmp_path / 'o').mkdir()
+    r = process_uploaded_file(src, tmp_path / 'o', session_id, tmp_db, 'anonymize', use_spacy=False)
+    anon = tmp_path / 'o' / r['output_filename']
+    (tmp_path / 'b').mkdir()
+    rr = process_uploaded_file(anon, tmp_path / 'b', session_id, tmp_db, 'deanonymize')
+    page = pymupdf.open(str(tmp_path / 'b' / rr['output_filename']))[0]
+    spans = [sp for b in page.get_text('dict')['blocks'] for l in b.get('lines', []) for sp in l['spans']
+             if 'Ракитин' in sp['text']]
+    assert spans, 'restored name not found'
+    assert min(sp['size'] for sp in spans) >= 8, [sp['size'] for sp in spans]
+    black = [d for d in page.get_drawings() if d.get('fill') is not None and max(d['fill']) < 0.2]
+    assert not black, f'{len(black)} black boxes left'

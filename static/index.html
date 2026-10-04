@@ -294,8 +294,14 @@ tr:last-child td{border-bottom:none}
 .pv-grp summary,.pv-dups summary{cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--text3);margin:4px 0 6px}
 .pv-ent{position:relative;flex-wrap:wrap}
 .pv-ent.on{background:var(--card2);box-shadow:inset 3px 0 0 var(--primary)}
-.pv-ent .ent-acts{display:none;width:100%;gap:4px;padding-top:4px}
-.pv-ent:hover .ent-acts,.pv-ent.on .ent-acts{display:flex}
+.pv-ent .ent-acts{display:flex;width:100%;gap:6px;padding-top:6px;flex-wrap:wrap}
+.pv-ent .tokmini{font-size:10px;padding:1px 6px;border-radius:10px;font-weight:700;opacity:.8}
+.pv-ent .forms-more{width:100%;font-size:11px;color:var(--text3)}
+.btn-mini.danger{color:#fca5a5;border-color:rgba(239,68,68,.45);margin-left:auto}
+.pv-filter-row{display:flex;gap:6px}
+.pv-filter-row input{flex:1;min-width:0;padding:6px 9px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:12.5px}
+.pv-filter-row select{padding:6px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:12px}
+.tok.hit{outline:2px solid #facc15;outline-offset:1px}
 .btn-mini{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--border2);background:var(--card);color:var(--text2);cursor:pointer}
 .btn-mini:hover{color:var(--text);border-color:var(--primary)}
 .pv-sim a{color:var(--text);cursor:pointer;text-decoration:underline dotted}
@@ -304,7 +310,7 @@ tr:last-child td{border-bottom:none}
 .tok.cur{outline:2px solid var(--primary)}
 .ico{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;vertical-align:-3px;margin-right:3px}
 .pv-na{font-size:11.5px;color:var(--text3);margin-right:6px}
-.modal-ta{resize:vertical;min-height:44px;font-family:var(--font);line-height:1.4}
+
 .sess-chk{margin-right:6px;accent-color:var(--primary)}
 .sess-bulk{display:flex;gap:8px;align-items:center;padding:6px 12px;font-size:12px;color:var(--text2)}
 .sess-bulk button{font-size:12px;padding:3px 9px;border-radius:6px;border:1px solid var(--border2);background:var(--card);color:var(--text2);cursor:pointer}
@@ -360,13 +366,15 @@ tr:last-child td{border-bottom:none}
 .modal{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);padding:24px;min-width:320px;max-width:420px;width:90%}
 .modal h3{font-size:15px;margin-bottom:6px;color:var(--text)}
 .modal p.modal-sub{font-size:12px;color:var(--text3);margin-bottom:14px}
-.modal input.modal-inp,.modal select.modal-inp{
+.modal input.modal-inp,.modal select.modal-inp,.modal textarea.modal-inp{
   width:100%;padding:9px 12px;
   background:var(--card2);border:1px solid var(--border2);
   border-radius:var(--r2);color:var(--text);font-size:14px;
   font-family:var(--font);outline:none;margin-bottom:14px;transition:border-color var(--t)
 }
-.modal input.modal-inp:focus,.modal select.modal-inp:focus{border-color:var(--primary)}
+.modal input.modal-inp:focus,.modal select.modal-inp:focus,.modal textarea.modal-inp:focus{border-color:var(--primary)}
+.modal textarea.modal-inp{min-height:68px;line-height:1.45;resize:vertical;display:block}
+.modal-field-hint{font-size:11.5px;color:var(--text3);margin:-10px 0 14px;line-height:1.4}
 .modal select.modal-inp{height:40px;line-height:1.3}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end}
 .modal-btns button{
@@ -531,7 +539,7 @@ tr:last-child td{border-bottom:none}
               <thead><tr>
                 <th title="Уникальный идентификатор замены. Подставляется в текст вместо ПДн">Токен</th>
                 <th title="Текст ровно так, как он встречается в документе. Это значение возвращается при деанонимизации">Найдено в документе</th>
-                <th title="Нормализованная (базовая) форма. Используется для группировки разных склонений в один токен. Если не уверены — оставьте равным «Найдено в документе»">Базовая форма</th>
+                <th title="Как писать значение в новом тексте внешней нейросети, где исходной формы нет (для ФИО — именительный падеж, программа склоняет сама)">Форма для нового текста</th>
                 <th>Тип</th>
                 <th></th>
               </tr></thead>
@@ -607,7 +615,7 @@ tr:last-child td{border-bottom:none}
     <div class="pv-head">
       <h3 id="pvTitle"></h3>
       <span id="pvSummary" class="pv-summary"></span>
-      <input type="search" id="pvSearch" placeholder="Поиск…" oninput="pvSearch()">
+      <input type="search" id="pvSearch" placeholder="Поиск: текст, фамилия, FIO_1…" oninput="pvSearch()">
       <label class="pv-chk" id="pvOrigLbl" title="Вместо меток показать значения, которые были в документе на этом месте"><input type="checkbox" id="pvOrig" onchange="pvMarkTokens()"> Показать исходный текст</label>
       <a class="btn-dl" id="pvDownload" href="#" download><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg> Скачать</a>
       <button class="pv-close" onclick="closePreview()" title="Закрыть (Esc)">×</button>
@@ -634,13 +642,15 @@ tr:last-child td{border-bottom:none}
 </div>
 
 <div class="modal-overlay hidden" id="editMapOverlay">
-  <div class="modal" style="max-width:460px">
+  <div class="modal" style="max-width:680px;width:92%">
     <h3 id="editMapTitle"></h3>
     <div class="modal-token-info hidden" id="editMapTokenInfo">Токен: <span id="editMapTokenVal"></span></div>
-    <label class="modal-field-label" title="Текст ровно так, как встречается в документе. Возвращается при деанонимизации">Найдено в документе <span style="color:var(--text2);font-weight:400">— что подставлять обратно</span></label>
-    <textarea class="modal-inp modal-ta" id="editMapOriginal" rows="2" placeholder="Иванова Мария Петровна"></textarea>
-    <label class="modal-field-label" title="Нормализованная форма, по которой группируются разные склонения. Если не уверены — оставьте равной «Найдено в документе»">Базовая форма <span style="color:var(--text2);font-weight:400">— для группировки склонений (необязательно)</span></label>
-    <textarea class="modal-inp modal-ta" id="editMapCanonical" rows="2" placeholder="Иванова Мария Петровна"></textarea>
+    <label class="modal-field-label">Значение в документе</label>
+    <textarea class="modal-inp" id="editMapOriginal" rows="3" placeholder="Иванова Мария Петровна"></textarea>
+    <div class="modal-field-hint">Ровно как написано в документе. Это значение ищется и заменяется меткой, а при восстановлении возвращается на своё место.</div>
+    <label class="modal-field-label">Форма для нового текста <span style="color:var(--text2);font-weight:400">(необязательно)</span></label>
+    <textarea class="modal-inp" id="editMapCanonical" rows="2" placeholder="Иванова Мария Петровна"></textarea>
+    <div class="modal-field-hint">Как писать значение там, где его в исходном документе не было, — в ответе внешней нейросети. Для ФИО это именительный падеж: программа сама склонит его по смыслу фразы. Если не уверены — оставьте как есть.</div>
     <label class="modal-field-label">Тип сущности</label>
     <select class="modal-inp" id="editMapType">
       <option value="ФИО">ФИО</option>
@@ -1136,37 +1146,60 @@ function renderPvSideRestored(){
 }
 function renderPvSide(){
   if(PV.restore)return renderPvSideRestored();
-  const counts=pvTokenCounts(), groups={};
-  Object.keys(counts).forEach(k=>{const g=pvGroup(k.split('_')[0]);(groups[g]=groups[g]||[]).push(k);});
+  const counts=pvTokenCounts();
   const L=PV.leaks; let h='';
-  h+=L==null?'':(L.length?`<div class="pv-leak bad">Повторная проверка: ${L.length} подозрительных мест<br>${L.slice(0,12).map(l=>esc(l.type+': '+l.value)).join('<br>')}</div>`
-      :`<div class="pv-leak ok">Утечек не найдено — готовый файл перечитан заново</div>`);
+  if(L&&L.length)h+=`<div class="pv-leak bad">Повторная проверка: ${L.length} подозрительных мест<br>${L.slice(0,12).map(l=>esc(l.type+': '+l.value)).join('<br>')}</div>`;
   const sim=(PV.similar||[]);
   if(sim.length){
     h+=`<details class="pv-dups" open><summary>Проверка дублей · ${sim.length}</summary>
       <div class="pv-dups-hint">Похоже на одно и то же. Номера здесь не предлагаются — они объединяются только при совпадении цифр.</div>
       ${sim.map((x,i)=>`<div class="pv-sim"><label class="pv-sim-chk"><input type="checkbox" data-i="${i}"> ${esc(tokenLabel(x.a.split('_')[0]))}</label>
-        <div><a onclick="pvJump('${x.a}')">${esc(x.a_value)}</a> <span class="cnt">${x.a}</span></div>
-        <div><a onclick="pvJump('${x.b}')">${esc(x.b_value)}</a> <span class="cnt">${x.b}</span></div>
+        <div><a onclick="pvJump('${x.a}')">${esc(x.a_value)}</a></div>
+        <div><a onclick="pvJump('${x.b}')">${esc(x.b_value)}</a></div>
         <div class="acts"><button class="btn-pv" onclick="pvMerge('${x.b}','${x.a}')">Объединить</button>
         <button class="btn-pv" onclick="pvDistinct(${i})">Это разные</button></div></div>`).join('')}
       ${sim.length>1?`<button class="btn-pv" onclick="pvMergeSelected()">Объединить выбранные</button>`:''}</details>`;
   }
+  h+=`<div class="pv-filter-row"><input type="search" id="pvFilter" placeholder="Фильтр: фамилия, ИНН, название…" value="${esc(PV.filter||'')}" oninput="PV.filter=this.value;renderPvList()">
+      <select id="pvFilterType" onchange="PV.ftype=this.value;renderPvList()"><option value="">Все типы</option>
+      ${['ФИО','Организации','Адреса','Реквизиты и номера'].map(g=>`<option ${PV.ftype===g?'selected':''}>${g}</option>`).join('')}</select></div>
+      <div class="pv-hint">Щелчок — к месту в тексте и действия; ещё щелчок или ↑↓ — к следующему вхождению</div>
+      <div id="pvList"></div>`;
+  $('pvSide').innerHTML=h;
+  renderPvList();
+}
+function renderPvList(){
+  const counts=pvTokenCounts(), q=(PV.filter||'').trim().toLowerCase(), groups={};
+  Object.keys(counts).forEach(k=>{
+    const g=pvGroup(k.split('_')[0]), f=(PV.forms[k]||{}).forms||[];
+    if(PV.ftype&&PV.ftype!==g)return;
+    if(q&&!(k.toLowerCase().includes(q)||f.some(v=>v.toLowerCase().includes(q))))return;
+    (groups[g]=groups[g]||[]).push(k);
+  });
   const order=['ФИО','Организации','Адреса','Реквизиты и номера'];
-  const total=Object.keys(counts).length;
-  h+=`<div><h4>Найдено в документе · ${total}</h4><div class="pv-hint">Щелчок — к месту в тексте, ещё щелчок или ↑↓ — к следующему</div></div>`;
+  let h='';
   order.filter(g=>groups[g]).forEach(g=>{
     const ks=groups[g].sort((a,b)=>counts[b]-counts[a]);
     h+=`<details class="pv-grp" open><summary>${g} · ${ks.length}</summary>${ks.map(k=>{const p=k.split('_')[0],f=(PV.forms[k]||{}).forms||[];
-      return `<div class="pv-ent ${PV.sel===k?'on':''}" data-k="${k}" onclick="pvJump('${k}')" title="${esc(f.join(' · '))}">
-        <span class="badge t-${p}">${k}</span><span class="val">${esc(f[0]||'')}</span><span class="cnt">×${counts[k]}</span>
-        <span class="ent-acts" onclick="event.stopPropagation()">
-          <button class="btn-mini" onclick="pvExclude('${k}')" title="Значение не персональное — снять маску">Не маскировать</button>
-          <button class="btn-mini" onclick="pvEdit('${k}')" title="Изменить запись">Изменить</button>
-          <button class="btn-mini" onclick="pvAlias('${k}')" title="Добавить вариант написания этого значения">+ вариант</button>
-        </span></div>`;}).join('')}</details>`;
+      const open=PV.sel===k;
+      return `<div class="pv-ent ${open?'on':''}" data-k="${k}" onclick="pvJump('${k}')" title="${esc(f.join(' · '))}">
+        <span class="val">${esc(f[0]||k)}</span><span class="cnt">×${counts[k]}</span>
+        <span class="tokmini t-${p}">${k}</span>
+        ${f.length>1?`<div class="forms-more">${f.slice(1,4).map(esc).join(' · ')}${f.length>4?' …':''}</div>`:''}
+        ${open?`<div class="ent-acts" onclick="event.stopPropagation()">
+          <button class="btn-mini" onclick="pvEdit('${k}')">Изменить</button>
+          <button class="btn-mini" onclick="pvAlias('${k}')" title="Значение в документе записано ещё и по-другому (сокращение, другое написание) — заменять его той же меткой">Другое написание…</button>
+          <button class="btn-mini danger" onclick="pvExcludeAsk('${k}')" title="Это не персональные данные: значение останется в документе открытым">Удалить из замен</button>
+        </div>`:''}</div>`;}).join('')}</details>`;
   });
-  $('pvSide').innerHTML=h;
+  if(!h)h='<div class="pv-hint">Ничего не найдено</div>';
+  $('pvList').innerHTML=h;
+}
+async function pvExcludeAsk(key){
+  const f=((PV.forms[key]||{}).forms||[])[0]||key;
+  const ok=await showModal({title:'Удалить из замен?',sub:`«${f}» больше не будет заменяться меткой ${key} — в файле значение останется открытым. Вернуть можно через «Таблица замен» → «⋯» → «Показать архив записей».`,
+    hasInput:false,okLabel:'Удалить из замен',okDanger:true});
+  if(ok)await pvExclude(key);
 }
 async function renderPvBody(){
   const body=$('pvBody'), url=`/api/download/${PV.sid}/${encodeURIComponent(PV.filename)}`;
@@ -1178,6 +1211,8 @@ async function renderPvBody(){
     try{
       const blob=await (await fetch(url)).blob(); body.innerHTML='';
       await docx.renderAsync(blob, body, null, {inWrapper:true, ignoreLastRenderedPageBreak:true, renderHeaders:true, renderFooters:true, renderFootnotes:true});
+      pvFixSymbols(body);
+      try{await pvFixAnchors(blob, body);}catch(ex){}
       pvMarkTokens(); return;
     }catch(ex){body.innerHTML='';}
   }
@@ -1232,6 +1267,54 @@ async function pvMergeSelected(){
   for(const i of ids){const x=PV.similar[i];
     try{await apiFetch(`/api/sessions/${PV.sid}/mappings/${encodeURIComponent(x.b)}/merge`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({into:x.a})});}catch(ex){}}
   toast(`Объединено пар: ${ids.length}, файл пересобирается`,'ok'); await pvAfterEdit();
+}
+// List bullets of Word documents are private-use codes of the Symbol / Wingdings fonts
+// (U+F0B7 «•», U+F0A7 «▪», U+F0D8 «➢»…). Word knows them; a browser without those fonts
+// draws squares. Replace them with ordinary Unicode characters and drop the special font.
+const SYM_MAP={symbol:{0xF0B7:'•',0xF02D:'–',0xF0A7:'♣',0xF0A8:'♦',0xF0DE:'⇒',0xF0AE:'→',0xF0B0:'°',0xF0D7:'⋅',0xF0E0:'◊',0xF06F:'○'},
+  wingdings:{0xF0A7:'▪',0xF0D8:'➢',0xF0FC:'✓',0xF0FE:'☑',0xF076:'❖',0xF06C:'●',0xF06E:'■',0xF071:'❑',0xF0A8:'◻',
+    0xF0E0:'→',0xF0E8:'➔',0xF0F0:'⇨',0xF0D7:'➢',0xF075:'◆',0xF0A1:'○',0xF0B7:'•',0xF09F:'•',0xF077:'◆',0xF0AA:'✦'}};
+function symChar(code,font){
+  const f=/wingding/i.test(font||'')?'wingdings':'symbol';
+  return SYM_MAP[f][code]||SYM_MAP.symbol[code]||SYM_MAP.wingdings[code]||'•';
+}
+function pvFixSymbols(root){
+  root.querySelectorAll('style').forEach(st=>{
+    st.textContent=st.textContent.replace(/\{[^{}]*\}/g,rule=>{
+      if(!/[-]/.test(rule))return rule;
+      const font=(rule.match(/font-family:\s*([^;}]+)/)||[])[1]||'';
+      return rule.replace(/[-]/g,c=>symChar(c.charCodeAt(0),font))
+                 .replace(/font-family:\s*['"]?(?:Symbol|Wingdings[^;'"]*)['"]?\s*;?/gi,'');
+    });
+  });
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT), nodes=[];
+  while(w.nextNode()){if(/[-]/.test(w.currentNode.nodeValue))nodes.push(w.currentNode);}
+  nodes.forEach(n=>{const font=getComputedStyle(n.parentElement).fontFamily;
+    n.nodeValue=n.nodeValue.replace(/[-]/g,c=>symChar(c.charCodeAt(0),font));
+    if(/symbol|wingding/i.test(font))n.parentElement.style.fontFamily='inherit';});
+}
+// Pictures anchored to the PAGE (a table background drawn as an image by a PDF→Word
+// converter) are placed by docx-preview relative to their paragraph — shifted. Put them
+// at their page offset, behind the text, as Word does.
+async function pvFixAnchors(blob, root){
+  if(!window.JSZip)return;
+  const zip=await JSZip.loadAsync(blob), f=zip.file('word/document.xml'); if(!f)return;
+  const xml=new DOMParser().parseFromString(await f.async('string'),'application/xml');
+  const WP='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+  const anchors=[...xml.getElementsByTagNameNS(WP,'anchor')].map(a=>{
+    const h=a.getElementsByTagNameNS(WP,'positionH')[0], v=a.getElementsByTagNameNS(WP,'positionV')[0];
+    return {page:h&&v&&h.getAttribute('relativeFrom')==='page'&&v.getAttribute('relativeFrom')==='page',
+            behind:a.getAttribute('behindDoc')==='1'};
+  });
+  const divs=[...root.querySelectorAll('section.docx article div')].filter(d=>d.style.position==='relative'&&d.style.width==='0px'&&d.querySelector('img,svg'));
+  if(divs.length!==anchors.length)return;
+  divs.forEach((d,i)=>{
+    if(!anchors[i].page)return;
+    const sec=d.closest('section.docx'); if(!sec)return;
+    sec.style.position='relative'; sec.style.isolation='isolate';
+    d.style.position='absolute'; sec.appendChild(d);
+    if(anchors[i].behind)d.style.zIndex='-1';
+  });
 }
 function pvMarkRestored(){
   // colour every inserted value in document order: green exact, yellow case chosen, red not found
@@ -1292,17 +1375,25 @@ function pvMarkTokens(){
 function pvSearch(){
   const body=$('pvBody'); if(!body)return;
   body.querySelectorAll('mark').forEach(m=>m.replaceWith(document.createTextNode(m.textContent))); body.normalize();
-  const q=$('pvSearch').value.trim().toLowerCase(); if(!q)return;
+  const q=$('pvSearch').value.trim().toLowerCase();
+  if(!q){body.querySelectorAll('span.tok.hit').forEach(e=>e.classList.remove('hit'));return;}
   const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT), nodes=[];
   while(walker.nextNode()){const n=walker.currentNode;if(n.parentElement.closest('.tok'))continue;if(n.nodeValue.toLowerCase().includes(q))nodes.push(n);}
   nodes.forEach(n=>{const t=n.nodeValue,i=t.toLowerCase().indexOf(q),f=document.createDocumentFragment(),mk=document.createElement('mark');
     f.appendChild(document.createTextNode(t.slice(0,i)));mk.textContent=t.slice(i,i+q.length);f.appendChild(mk);f.appendChild(document.createTextNode(t.slice(i+q.length)));n.replaceWith(f);});
-  const first=body.querySelector('mark'); if(first)first.scrollIntoView({block:'center'});
+  // placeholders: by the token itself (FIO_1) or by any of its original values («Иванов»)
+  body.querySelectorAll('span.tok.hit').forEach(e=>e.classList.remove('hit'));
+  if(PV&&PV.forms&&!PV.restore){
+    body.querySelectorAll('span.tok').forEach(e=>{
+      const k=e.dataset.token, f=(PV.forms[k]||{}).forms||[];
+      if(k.toLowerCase().includes(q)||f.some(v=>v.toLowerCase().includes(q)))e.classList.add('hit');
+    });
+  }
+  const first=body.querySelector('mark,span.tok.hit'); if(first)first.scrollIntoView({block:'center'});
 }
 function pvJump(key,dir=1){
   const els=[...$('pvBody').querySelectorAll(`span.tok[data-token="${key}"]`)];
-  if(PV.sel!==key){PV.sel=key;PV.occ[key]=-1;
-    document.querySelectorAll('.pv-ent').forEach(e=>e.classList.toggle('on',e.dataset.k===key));}
+  if(PV.sel!==key){PV.sel=key;PV.occ[key]=-1; if(!PV.restore&&$('pvList'))renderPvList();}
   if(!els.length){toast('Это значение есть только на изображении страницы','info');return;}
   const k=PV.occ[key]=((PV.occ[key]??-1)+dir+els.length)%els.length;
   els.forEach(e=>e.classList.remove('cur'));

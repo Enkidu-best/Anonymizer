@@ -306,12 +306,16 @@ def update_mapping_route(sid, token):
         remember_entity(DB_PATH, new_original, new_type)
         return jsonify({'ok': True, 'new_token': token})
     # value or type changed: the old token is retired (kept to restore earlier files)
+    from core.db import remove_exclusions_for
     if new_original != old['original_form']:
         add_exclusion(DB_PATH, sid, old['original_form'], old['entity_type'])
     retire_mapping(DB_PATH, sid, token)
+    # the new value is what the user wants masked: never left behind by an earlier
+    # «не маскировать» or an earlier edit of the same value (edit, then edit back)
+    remove_exclusions_for(DB_PATH, sid, new_original, new_type)
     edited = bool(old.get('canonical_edited')) or new_canonical != old['canonical_form']
     new_token = get_or_create_token(DB_PATH, sid, new_original, new_canonical, new_type,
-                                    canonical_edited=edited, separate=choice == 'separate')
+                                    canonical_edited=edited, manual=True, separate=choice == 'separate')
     log.event('mapping_edit', token=token, action='replace', new_token=new_token)
     # User explicitly confirmed this entity — remember globally for future sessions
     remember_entity(DB_PATH, new_original, new_type)
@@ -339,6 +343,8 @@ def add_mapping_route(sid):
         dup = _duplicate_of(sid, original, entity_type)
         if dup:
             return jsonify({'duplicate': dup}), 409
+    from core.db import remove_exclusions_for
+    remove_exclusions_for(DB_PATH, sid, original, entity_type)    # added by hand: mask it again
     token = get_or_create_token(DB_PATH, sid, original, canonical, entity_type,
                                 canonical_edited=edited, manual=True, separate=choice == 'separate')
     # Manually added → strong signal this is real PII. Cross-session learn.
@@ -930,8 +936,9 @@ def main():
             webview.settings['ALLOW_DOWNLOADS'] = True
             threading.Thread(target=_serve, args=(PORT,), daemon=True).start()
             _wait_ready(url)
+            # text_select: pywebview forbids selecting text by default — the preview needs it
             webview.create_window(f'Anonymizer {APP_VERSION}', url, width=1360, height=900,
-                                  min_size=(1000, 680))
+                                  min_size=(1000, 680), text_select=True)
             webview.start()
             os._exit(0)
         except ImportError:

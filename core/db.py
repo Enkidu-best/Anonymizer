@@ -624,6 +624,21 @@ def add_exclusion(db_path, session_id: str, original_form: str, entity_type: str
         )
 
 
+def remove_exclusions_for(db_path, session_id: str, value: str, entity_type: str) -> int:
+    """The user wants this value masked again (edited back, added by hand): drop every
+    «не маскировать» row that matches it — the exact string or another form of it."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute('SELECT original_form, entity_type FROM exclusions WHERE session_id=?',
+                            (session_id,)).fetchall()
+        n = 0
+        for r in rows:
+            if (value, entity_type) in ExclusionSet([(r['original_form'], r['entity_type'])]):
+                conn.execute('DELETE FROM exclusions WHERE session_id=? AND original_form=? AND entity_type=?',
+                             (session_id, r['original_form'], r['entity_type']))
+                n += 1
+    return n
+
+
 def get_exclusions(db_path, session_id: str) -> set:
     """Return set of (original_form, entity_type) to skip during pipeline."""
     with get_conn(db_path) as conn:

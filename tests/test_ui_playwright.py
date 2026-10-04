@@ -112,10 +112,12 @@ a.app.run(host="127.0.0.1", port={port}, debug=False, use_reloader=False)
 @pytest.fixture(scope='module')
 def browser():
     with sync_playwright() as p:
+        # UI_BROWSER=webkit — the engine of the app window on macOS (pywebview = WKWebView)
+        kind = os.environ.get('UI_BROWSER', 'chromium')
         try:
-            br = p.chromium.launch(headless=True)
+            br = getattr(p, kind).launch(headless=True)
         except Exception as ex:
-            pytest.skip(f'Chromium unavailable: {ex}')
+            pytest.skip(f'{kind} unavailable: {ex}')
         yield br
         br.close()
 
@@ -407,7 +409,7 @@ def test_preview_and_auto_session_name(page, server, tmp_path):
     page.wait_for_selector('#pvOverlay:not(.hidden) .tok')
     assert page.locator('#pvBody .tok').count() > 10
     assert 'Белозёров' not in page.inner_text('#pvBody')
-    expect(page.locator('#pvSide .pv-leak.ok')).to_be_visible()
+    assert page.locator('#pvSide .pv-leak').count() == 0          # no «утечек не найдено» box (owner)
     assert page.locator('#pvSide .pv-ent').count() >= 10        # entity list in the side panel
     assert page.locator('#pvBody .docx-wrapper').count() == 1   # rendered like in Word
     page.check('#pvOrig')
@@ -610,3 +612,30 @@ def test_bulk_delete_sessions_and_menu(page, server):
     page.wait_for_selector('#jobsOverlay:not(.hidden)')
     # the edit form has multi-line fields
     assert page.evaluate("document.getElementById('editMapOriginal').tagName") == 'TEXTAREA'
+
+
+def test_panel_values_filter_and_safe_actions(page, server, tmp_path):
+    """Owner, v3.4.0: the panel shows values as in the text, has a filter; actions open on a
+    click (not on hover), «Изменить» first, removal asks first; search finds placeholders."""
+    _make_session(page, 'Панель')
+    _upload_file_path(page, _contract_docx(tmp_path / 'c.docx'))
+    page.click('#procBtn')
+    page.wait_for_selector('.file-row.ok', timeout=60000)
+    page.click('.file-row.ok .btn-pv')
+    page.wait_for_selector('#pvBody .tok')
+    ent = page.locator('#pvSide .pv-ent').first
+    assert ent.locator('.val').inner_text() != '' and '_' not in ent.locator('.val').inner_text()
+    ent.hover()
+    assert page.locator('#pvSide .ent-acts').count() == 0             # nothing appears on hover
+    page.fill('#pvFilter', 'Скворцов')
+    assert page.locator('#pvSide .pv-ent').count() == 1
+    page.locator('#pvSide .pv-ent').first.click()
+    acts = page.locator('#pvSide .ent-acts button')
+    assert acts.first.inner_text() == 'Изменить'
+    page.click('#pvSide .ent-acts button:has-text("Удалить из замен")')
+    page.wait_for_selector('#modalOverlay:not(.hidden)')
+    page.click('#modalOverlay .btn-modal-cancel >> nth=0')        # cancel: nothing removed
+    assert page.locator('#pvBody span.tok[data-token="FIO_2"]').count() == 1
+    page.fill('#pvSearch', 'Белозёров')                            # search by the original value
+    assert page.locator('#pvBody span.tok.hit').count() == 2
+    assert page.evaluate("document.getElementById('editMapOriginal').getBoundingClientRect !== undefined")
