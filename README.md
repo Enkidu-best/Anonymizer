@@ -70,3 +70,9 @@ python scripts/audit_folder.py <папка>    # аудит своих доку�
 spaCy и модель `ru_core_news_lg` — MIT; pymorphy3 — MIT, словари OpenCorpora — CC BY-SA; pywebview — BSD; pdf2docx — MIT (Artifex); OpenCV (зависимость pdf2docx) — Apache-2.0; docx-preview — Apache-2.0; JSZip — MIT. Распознавание текста — встроенный в macOS Apple Vision.
 
 **PyMuPDF — AGPL-3.0** (или коммерческая лицензия Artifex). Для собственного использования это не ограничение. Если программу продавать или раздавать третьим лицам, AGPL требует открыть исходный код всей программы на тех же условиях; иначе нужна коммерческая лицензия Artifex или замена PyMuPDF (и pdf2docx, который на нём построен).
+
+## Документы
+
+`docs/PII_VARIANTS_CATALOG.md` - правила по видам персональных данных; план разработки - `CLAUDE_CODE_TASK.md`. Обзор
+готовых решений (18.10) - один на все проекты, в корне «Разработка ПО»: «Готовые решения и подходы (обзор 18.10).md»,
+раздел «Anonymizer».
