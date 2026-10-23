@@ -6,6 +6,7 @@ Anonymizer — Flask backend + native window.
     python app.py --server    server only (prints the URL; used by tests and checks)
 """
 
+import contextlib
 import io
 import json
 import re
@@ -193,6 +194,20 @@ def llm_status():
     return jsonify(check_ollama())
 
 
+@app.route('/api/heavy-lock')
+def heavy_lock_status():
+    """GPU queue (shared module common/lock, standard 2.4): who holds it, the queue; ours - held by this program;
+    cpu - «На процессоре» with a forecast (kind - accurate / llm_only)."""
+    from core import heavy
+    return jsonify(heavy.status_json(request.args.get('kind', 'accurate')))
+
+
+@app.route('/common/lock/<path:name>')
+def common_lock_ui(name):
+    """The window «Видеокарта занята» - shared module (common/lock/lock_ui: web/heavy-lock.js, .css and texts.json)."""
+    return send_from_directory(BUNDLE_DIR / 'common' / 'lock' / 'lock_ui', name)
+
+
 @app.route('/api/llm-progress')
 def llm_progress():
     from core.llm import get_llm_progress
@@ -268,7 +283,6 @@ def session_mappings(sid):
 def delete_mapping_route(sid, token):
     from core.db import delete_mapping, get_session_mappings, add_exclusion
     mappings = get_session_mappings(DB_PATH, sid)
-    m = next((x for x in mappings if x['token'] == token), None)
     # every form of this entity («Иванов», «Иванову П.С.») is excluded, not only the first row
     for x in mappings:
         if x['token'] == token:
@@ -472,7 +486,6 @@ def delete_pattern(pid):
 # ── Process ───────────────────────────────────────────────────────────────────
 @app.route('/api/process', methods=['POST'])
 def process():
-    from core.handlers import process_uploaded_file
     from core.db       import get_session_mappings
 
     mode       = request.form.get('mode', 'anonymize')
@@ -484,6 +497,7 @@ def process():
     engine     = request.form.get('engine') or ('accurate' if use_llm else 'fast')
     llm_only   = engine == 'llm_only'
     background_review = engine == 'accurate' and mode == 'anonymize'
+    lock = request.form.get('lock', 'wait')     # choice of the window «Видеокарта занята» (standard 2.4)
     if background_review:
         use_llm = False            # the file is ready after the rules; the LLM reviews in the background
     if not sid:
@@ -500,6 +514,25 @@ def process():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
+    from core import heavy
+    try:   # «Только нейросеть» - the whole request under the GPU lock («Точно» - the background review takes it itself)
+        with heavy.job(lock, 'обезличивание нейросетью', wait=600) if llm_only else contextlib.nullcontext():
+            _process_files(files, in_dir, out_dir, session_dir, sid, mode, engine, use_spacy, use_llm, llm_only,
+                           background_review, lock, results)
+    except heavy.Busy as ex:
+        return jsonify({'error': str(ex)}), 409
+
+    _auto_name_session(sid, [r['filename'] for r in results if r.get('status') == 'ok'])
+    return jsonify({
+        'results':    results,
+        'session_id': sid,
+        'mappings':   get_session_mappings(DB_PATH, sid),
+    })
+
+
+def _process_files(files, in_dir, out_dir, session_dir, sid, mode, engine, use_spacy, use_llm, llm_only,
+                   background_review, lock, results):
+    from core.handlers import process_uploaded_file
     for n, f in enumerate(files, 1):
         if not f.filename:
             continue
@@ -527,7 +560,7 @@ def process():
                 if src.suffix.lower() in IMAGE_EXT:
                     r['note'] = 'Для изображений проверка нейросетью не выполняется: закрашено по распознанному тексту'
                 else:
-                    r['llm_job'] = _start_review(sid, src, out_dir / r['output_filename'])
+                    r['llm_job'] = _start_review(sid, src, out_dir / r['output_filename'], lock)
             out_name = r['output_filename']
             _remember_output(session_dir, src.name, mode, out_name)
             if r.get('extra_output'):
@@ -550,19 +583,12 @@ def process():
                              'status':  'error',
                              'error':   str(ex)})
 
-    _auto_name_session(sid, [r['filename'] for r in results if r.get('status') == 'ok'])
-    return jsonify({
-        'results':    results,
-        'session_id': sid,
-        'mappings':   get_session_mappings(DB_PATH, sid),
-    })
-
 
 # ── Background LLM review («Точно») ───────────────────────────────────────────
 REVIEWS = {}     # job id → state; in memory, a review lives as long as the app runs
 
 
-def _start_review(sid, src: Path, out: Path) -> str:
+def _start_review(sid, src: Path, out: Path, lock: str = 'wait') -> str:
     """The file is already downloadable; the local LLM reviews the found values and the
     suspicious lines in a thread and proposes additions / removals."""
     import uuid as _uuid
@@ -574,10 +600,17 @@ def _start_review(sid, src: Path, out: Path) -> str:
         from core.extract import extract_text
         from core.db import get_session_mappings
         from core.handlers import CONVERT_EXT, _convert_to_docx
+        from core import heavy
         from core.llm_review import review
         st = REVIEWS[jid]
+
+        def waiting(name):          # in the GPU queue: «Жду видеокарту: «Herald»» in the file list
+            st.update(status='wait_lock', holder=name, updated=time.time())
         try:
-          with journal.Job('llm_review', session=sid[:8], ext=src.suffix.lower()):
+          with heavy.job(lock, 'проверка нейросетью', wait=1800, on_wait=waiting), \
+                  journal.Job('llm_review', session=sid[:8], ext=src.suffix.lower()):
+            if st['status'] == 'wait_lock':
+                st.update(status='running', started=time.time())
             orig_path = src
             if src.suffix.lower() in CONVERT_EXT:
                 import tempfile
@@ -589,8 +622,8 @@ def _start_review(sid, src: Path, out: Path) -> str:
         except Exception as ex:
             journal.error('llm_review_failed', ex)
             st['status'] = 'error'
-            st['error'] = 'Нейросеть недоступна или не ответила' if 'urlopen' in repr(ex) or 'Connection' in repr(ex) \
-                else str(ex)[:200]
+            st['error'] = str(ex) if isinstance(ex, heavy.Busy) else 'Нейросеть недоступна или не ответила' \
+                if 'urlopen' in repr(ex) or 'Connection' in repr(ex) else str(ex)[:200]
         st['updated'] = time.time()
 
     threading.Thread(target=work, daemon=True).start()

@@ -71,8 +71,8 @@ class Segment:
             if not hit:
                 continue
 
-            def overlap(i):
-                return min(e, offsets[i] + len(self.pieces[i][1])) - max(s, offsets[i])
+            def overlap(i):    # called right away, in this step of the loop
+                return min(e, offsets[i] + len(self.pieces[i][1])) - max(s, offsets[i])  # noqa: B023
             best = max(hit, key=lambda i: (overlap(i), -i))
             for i in reversed(hit):
                 node = self.pieces[i][0]

@@ -9,8 +9,10 @@ ROOT = Path(SPECPATH)
 VERSION = re.search(r'__version__ = "(.+?)"', (ROOT / 'core' / 'version.py').read_text()).group(1)
 MAC = sys.platform == 'darwin'
 
-datas = [(str(ROOT / 'static'), 'static')]
-binaries, hiddenimports = [], collect_submodules('core')
+datas = [(str(ROOT / 'static'), 'static'),
+         # the window «Видеокарта занята» - shared module common/lock (served at /common/lock/...)
+         (str(ROOT / 'common' / 'lock' / 'lock_ui'), 'common/lock/lock_ui')]
+binaries, hiddenimports = [], collect_submodules('core') + collect_submodules('common')
 packages = ['spacy', 'thinc', 'ru_core_news_lg', 'pymorphy3', 'pymorphy3_dicts_ru',
             'webview', 'pymupdf', 'lxml', 'docx', 'openpyxl', 'PIL', 'pillow_heif', 'pdf2docx', 'cv2', 'fontTools']
 for pkg in packages:

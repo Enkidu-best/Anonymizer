@@ -16,7 +16,9 @@
   --purple:#a78bfa;--purple-bg:rgba(167,139,250,.12);
   --text:#e2e8f5;--text2:#8fa0be;--text3:#4d6080;
   --font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-  --r:10px;--r2:6px;--t:.18s ease
+  --r:10px;--r2:6px;--t:.18s ease;
+  /* tokens of the shared window «Видеокарта занята» (common/lock) - in this app's dark palette */
+  --surface-2:var(--card2);--border-strong:var(--border2);--muted:var(--text2);--accent:var(--primary);--accent-text:#fff
 }
 html,body{height:100%}
 body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
@@ -56,6 +58,7 @@ header{
   cursor:pointer;transition:all var(--t)
 }
 .llm-badge:hover{border-color:var(--primary);color:var(--text)}
+.llm-badge.gpu-busy{border-color:var(--warn);color:var(--warn)}
 .llm-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:background .4s}
 .llm-dot.ready{background:var(--purple)}
 
@@ -390,6 +393,8 @@ tr:last-child td{border-bottom:none}
 </style>
 <script src="/static/vendor/jszip.min.js"></script>
 <script src="/static/vendor/docx-preview.min.js"></script>
+<link rel="stylesheet" href="/common/lock/web/heavy-lock.css">
+<script src="/common/lock/web/heavy-lock.js"></script>
 </head>
 <body>
 <div class="app">
@@ -776,6 +781,32 @@ function toggleLlmPanel() {
   $('llmPanel').classList.toggle('hidden');
 }
 
+// окно «Видеокарта занята» общего модуля (common/lock): свободно или держит сама программа - сразу «wait»; null - «Отмена»
+async function gpuChoice(kind) {
+  const HL = window.HeavyLockUI;
+  if (!HL) return 'wait';
+  let st;
+  try { st = await apiFetch('/api/heavy-lock?kind=' + kind); } catch { return 'wait'; }
+  if (st.ours || (st.free && !(st.queue || []).length)) return 'wait';
+  await HL.ready;
+  return HL.ask(st.holder, { lang: 'ru', cpu: st.cpu, queue: (st.queue || []).map(w => w.program) });
+}
+
+// значок LLM вверху: видеокарта у другой программы - «LLM: занята «Herald»» (слова общего модуля, стандарт 2.1)
+async function gpuBadge() {
+  const HL = window.HeavyLockUI, badge = $('llmBadgeText');
+  if (!HL || !badge) return;
+  try {
+    const st = await apiFetch('/api/heavy-lock');
+    await HL.ready;
+    const busy = st.holder && !st.ours;
+    badge.textContent = busy ? 'LLM: ' + HL.t('st_busy', 'ru', { program: st.holder.program }) : 'LLM';
+    badge.title = busy ? HL.describe(st.holder, 'ru') : '';
+    $('llmBadge').classList.toggle('gpu-busy', !!busy);
+  } catch {}
+}
+setInterval(gpuBadge, 5000);
+
 async function checkLlm() {
   try {
     const d = await apiFetch('/api/llm-status');
@@ -785,6 +816,7 @@ async function checkLlm() {
     if (d.available) {
       dot.className = 'llm-dot ready';
       badge.textContent = 'LLM';
+      gpuBadge();
       $('llmStartBtn').classList.add('hidden');
       sel.innerHTML = '<option value="">— выбрать модель —</option>' +
         d.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
@@ -1077,6 +1109,7 @@ function restoreNote(item){
 }
 function llmNote(item){
   const j=item.llm; if(!j||S.mode!=='anonymize')return '';
+  if(j.status==='wait_lock')return `<div style="color:#a78bfa">🤖 Проверка нейросетью ждёт видеокарту: «${esc(j.holder||'?')}» - начнётся сама</div>`;
   if(j.status==='running')return `<div style="color:#a78bfa">🤖 Нейросеть проверяет найденное… ${j.elapsed?Math.round(j.elapsed)+' с':''}</div>`;
   if(j.status==='stale')return `<div class="file-err">🤖 Проверка нейросетью зависла (нет ответа больше 5 минут)</div>`;
   if(j.status==='error'||j.status==='lost')return `<div class="file-warn">🤖 ${esc(j.error||'Проверка нейросетью не выполнена')} — файл после правил готов</div>`;
@@ -1094,7 +1127,7 @@ async function pollReview(item){
     item.llm={...item.llm,...d};
   }catch(ex){item.llm.status='lost';item.llm.error='Проверка недоступна';}
   renderFileList();
-  if(item.llm.status==='running')setTimeout(()=>pollReview(item),2500);
+  if(item.llm.status==='running'||item.llm.status==='wait_lock')setTimeout(()=>pollReview(item),2500);
 }
 function leakNote(item){
   if(S.mode!=='anonymize'||!item.leaks)return item.note?`<div class="file-err">${esc(item.note)}</div>`:'';
@@ -1549,6 +1582,10 @@ async function doProcess(){
     pending=S.files.filter(x=>x.status===null);
   }
   if(!pending.length||!S.active)return;
+  const engine0 = S.mode !== 'anonymize' ? 'fast'
+    : ({regex_spacy:'fast', regex_spacy_llm:'accurate', llm_only:'llm_only'}[S.procMode] || 'fast');
+  const lock = engine0 === 'fast' ? 'wait' : await gpuChoice(engine0);   // окно «Видеокарта занята» (стандарт 2.4)
+  if(!lock)return;
 
   S.files.forEach(x=>{if(x.status===null)x.status='loading';});
   renderFileList();
@@ -1556,9 +1593,7 @@ async function doProcess(){
   $('procIco').outerHTML='<div class="spinner" id="procIco"></div>';
   $('procTxt').textContent='Обработка...';
 
-  const pm = S.procMode;
-  const engine = S.mode !== 'anonymize' ? 'fast'
-    : ({regex_spacy:'fast', regex_spacy_llm:'accurate', llm_only:'llm_only'}[pm] || 'fast');
+  const engine = engine0;
   if (engine !== 'fast' && !$('llmModelSelect').value) {
     toast('Выберите модель нейросети в панели LLM или переключитесь на «Быстро»','err');
   }
@@ -1570,6 +1605,7 @@ async function doProcess(){
   fd.append('mode',S.mode);
   fd.append('session_id',S.active.id);
   fd.append('engine', engine);
+  fd.append('lock', lock);
   fd.append('use_spacy', engine === 'llm_only' ? 'false' : 'true');
   pending.forEach(x=>fd.append('files',x.file));
 

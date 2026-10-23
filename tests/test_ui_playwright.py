@@ -639,3 +639,41 @@ def test_panel_values_filter_and_safe_actions(page, server, tmp_path):
     page.fill('#pvSearch', 'Белозёров')                            # search by the original value
     assert page.locator('#pvBody span.tok.hit').count() == 2
     assert page.evaluate("document.getElementById('editMapOriginal').getBoundingClientRect !== undefined")
+
+
+def test_gpu_busy_dialog_before_llm(page, server, tmp_path):
+    """«_Общие модули 01»: the GPU is taken by another program - «Точно» and «Только нейросеть» ask in the window
+    «Видеокарта занята» (4 buttons, «На процессоре (очень медленно)» with a forecast); «Отмена» sends nothing; the badge
+    says «LLM: занята «Herald»». The lock is the test's own (conftest), held by a second process."""
+    holder = ROOT / 'common' / 'lock' / 'tests' / '_holder.py'
+    hd = subprocess.Popen([sys.executable, str(holder), os.environ['ANONYMIZER_HEAVY_LOCK'], 'Herald', 'human', 'hold',
+                           'озвучка книги'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert hd.stdout.readline().strip() == 'taken'
+        sent = []
+        page.on('request', lambda r: sent.append(r.url) if '/api/process' in r.url else None)
+        _make_session(page, 'Видеокарта')
+        _upload_file_path(page, _contract_docx(tmp_path / 'c.docx'))
+        for pm, kind in (('#pm2', 'accurate'), ('#pm3', 'llm_only')):
+            page.click(pm)
+            page.click('#procBtn')
+            page.wait_for_selector('.hl-dialog', timeout=15000)
+            txt = page.inner_text('.hl-dialog')
+            assert 'Видеокарта занята: «Herald», с ' in txt and 'озвучка книги' in txt, (kind, txt)
+            btns = page.eval_on_selector_all('.hl-dialog button', 'bs => bs.map(b => b.dataset.answer)')
+            assert btns == ['wait', 'now', 'cpu', 'cancel'], (kind, btns)
+            assert 'На процессоре (очень медленно)' in txt and 'раз дольше' in txt
+            if os.environ.get('UI_SHOTS'):
+                page.screenshot(path=str(Path(os.environ['UI_SHOTS']) / f'anon-busy-{kind}.png'))
+            page.click('.hl-dialog button[data-answer=cancel]')
+            page.wait_for_timeout(500)
+            assert not sent and page.evaluate('S.files[0].status') is None, kind
+        page.evaluate('gpuBadge()')
+        page.wait_for_function("document.getElementById('llmBadgeText').textContent.includes('Herald')")
+        assert page.inner_text('#llmBadgeText') == 'LLM: занята «Herald»'
+    finally:
+        hd.stdin.write('release\n')
+        hd.stdin.flush()
+        hd.wait(10)
+        hd.stdin.close()
+        hd.stdout.close()

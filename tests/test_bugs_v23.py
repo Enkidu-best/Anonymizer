@@ -135,7 +135,7 @@ def test_manually_added_entity_remembered(tmp_db):
     must auto-anonymize that value in B."""
     sa = create_session(tmp_db, 'A')
     # Simulate the user manually adding a phone number that regex missed
-    tok = get_or_create_token(tmp_db, sa, '+7(800)123-45-67', '+7(800)123-45-67', 'ТЕЛЕФОН')
+    get_or_create_token(tmp_db, sa, '+7(800)123-45-67', '+7(800)123-45-67', 'ТЕЛЕФОН')
     remember_entity(tmp_db, '+7(800)123-45-67', 'ТЕЛЕФОН')
 
     # Sanity: it's in known_entities

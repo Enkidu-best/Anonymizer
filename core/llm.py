@@ -7,6 +7,7 @@ Recommended models (install with: ollama pull <name>):
   mistral-nemo    — 12B, ~7 GB RAM, good Russian, balanced speed (fallback)
 """
 
+import contextlib
 import json
 import re
 import time
@@ -216,9 +217,17 @@ def preload_model_async():
                     _llm_model = _available_models[0]
                 else:
                     return
-            print(f'[LLM] Preloading model {_llm_model}...')
-            _ollama_generate('ok', 'Краткий ответ', timeout=90)
-            print('[LLM] Model preloaded and ready')
+            from core import heavy
+            lk = heavy.try_background('прогрев модели')   # the GPU is taken by another program - no warm-up
+            if lk is None:
+                print('[LLM] GPU is busy - preload skipped')
+                return
+            try:
+                print(f'[LLM] Preloading model {_llm_model}...')
+                _ollama_generate('ok', 'Краткий ответ', timeout=90, held=True)
+                print('[LLM] Model preloaded and ready')
+            finally:
+                lk.release()
         except Exception as ex:
             print(f'[LLM] Preload failed (will load on first use): {ex}')
     threading.Thread(target=_do, daemon=True).start()
@@ -244,8 +253,11 @@ ENTITY_SCHEMA = {
 
 def _ollama_generate(prompt: str, system: str,
                      timeout: int = 90, schema: dict = None, num_ctx: int = None,
-                     num_predict: int = 2048) -> str:
+                     num_predict: int = 2048, held: bool = False) -> str:
+    """One request to Ollama under the GPU queue (core/heavy.py): inside a job or held=True - the lock is already ours."""
+    from core import heavy
     model = _llm_model or DEFAULT_MODEL
+    cpu = heavy.on_cpu()            # «На процессоре» - Ollama without the GPU, the model is unloaded after the job
     if num_ctx is None:
         # ONE fixed context size: Ollama reloads the model whenever num_ctx changes, and two
         # requests with different sizes keep two copies in memory (16 GB Mac → swap, 0.5 tok/s)
@@ -255,10 +267,10 @@ def _ollama_generate(prompt: str, system: str,
         'prompt': prompt,
         'system': system,
         'stream': False,
-        'keep_alive': '30m',
+        'keep_alive': 0 if cpu else '30m',
         'think': False,              # Qwen3-family: no hidden reasoning eating the answer budget
         'format': schema or ENTITY_SCHEMA,   # structured output: always valid JSON of this shape
-        'options': {'temperature': 0.0, 'num_predict': num_predict, 'num_ctx': num_ctx},
+        'options': {'temperature': 0.0, 'num_predict': num_predict, 'num_ctx': num_ctx, **({'num_gpu': 0} if cpu else {})},
     }).encode()
 
     req = urllib.request.Request(
@@ -268,10 +280,22 @@ def _ollama_generate(prompt: str, system: str,
         method='POST',
     )
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
+    with contextlib.nullcontext() if held else heavy.call():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
     _log_metrics(model, data, time.time() - t0, len(prompt))
     return data.get('response', '')
+
+
+def unload():
+    """Unload the model from memory (after a job on the CPU: the next one on the GPU loads it there again)."""
+    try:
+        body = json.dumps({'model': _llm_model or DEFAULT_MODEL, 'keep_alive': 0}).encode()
+        req = urllib.request.Request(f'{OLLAMA_URL}/api/generate', data=body,
+                                     headers={'Content-Type': 'application/json'}, method='POST')
+        urllib.request.urlopen(req, timeout=20).close()
+    except Exception:  # noqa: BLE001 - Ollama is not running - nothing to unload
+        pass
 
 
 LAST_METRICS: list = []
@@ -435,7 +459,6 @@ def process_chat_command(message: str, db_path, session_id: str) -> dict:
     if not _llm_available:
         return {'ok': False, 'message': 'Ollama недоступен'}
 
-    model = _llm_model or DEFAULT_MODEL
     mappings = get_session_mappings(db_path, session_id)
 
     ctx_lines = [f'{m["token"]} = {m["original_form"]} ({m["entity_type"]})'

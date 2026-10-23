@@ -693,7 +693,7 @@ def _flex(find):
         if len(flat) == len(text):
             return find(flat)
         # map flat offsets back to text offsets
-        idx, j = [], 0
+        idx = []
         for k, ch in enumerate(text):
             if ch in ' \t\n' and k > 0 and text[k - 1] in ' \t\n':
                 continue

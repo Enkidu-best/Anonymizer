@@ -9,6 +9,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 # tests never write into the owner's journal
 os.environ.setdefault('ANONYMIZER_LOG_DIR', tempfile.mkdtemp(prefix='anon_logs_'))
+# standard 6.10: data (anon.db, uploads) and the GPU queue - own temp folders, never the owner's
+os.environ.setdefault('ANONYMIZER_DATA_DIR', tempfile.mkdtemp(prefix='anon_data_'))
+os.environ['ANONYMIZER_HEAVY_LOCK'] = os.path.join(tempfile.mkdtemp(prefix='anon_lock_'), '.heavy-lock')
+os.environ.pop('ANONYMIZER_HEAVY_LOCK_HELD', None)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
