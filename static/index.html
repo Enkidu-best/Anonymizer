@@ -21,12 +21,14 @@
   --surface-2:var(--card2);--border-strong:var(--border2);--muted:var(--text2);--accent:var(--primary);--accent-text:#fff
 }
 html,body{height:100%}
+/* один размер текста во всех программах (Единый стандарт 1.5, 24.10): окно свёрстано на 14 px - вся страница ×17/14, основной текст 17 px */
+html{--zoom:1.2143;zoom:var(--zoom)}   /* единицы экрана (vh, vw) - делить на --zoom, иначе окна выше экрана */
 body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 .hidden{display:none!important}
 
 /* ── LAYOUT ── */
-.app{display:flex;flex-direction:column;height:100vh}
+.app{display:flex;flex-direction:column;height:calc(100vh / var(--zoom))}
 .body{display:flex;flex:1;overflow:hidden}
 
 /* ── HEADER ── */
@@ -269,7 +271,7 @@ tr:last-child td{border-bottom:none}
 
 /* ── PREVIEW ── */
 .pv-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:210;animation:fadeM .15s ease}
-.pv{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:min(1400px,97vw);height:93vh;display:flex;flex-direction:column;overflow:hidden}
+.pv{background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:min(1400px,calc(97vw / var(--zoom)));height:calc(93vh / var(--zoom));display:flex;flex-direction:column;overflow:hidden}
 .pv-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pv-head h3{flex:1;min-width:180px;font-size:14px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pv-head input[type=search]{width:180px;padding:6px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r2);color:var(--text);font-size:13px}
@@ -581,7 +583,7 @@ tr:last-child td{border-bottom:none}
   <div class="modal" style="max-width:640px">
     <h3>Последние задачи</h3>
     <p class="modal-sub">20 последних обработок. Имена файлов и значения сюда не попадают.</p>
-    <div id="jobsBody" style="max-height:60vh;overflow:auto"></div>
+    <div id="jobsBody" style="max-height:calc(60vh / var(--zoom));overflow:auto"></div>
     <div class="modal-btns" style="margin-top:14px"><button class="btn-modal-ok" onclick="$('jobsOverlay').classList.add('hidden')">Закрыть</button></div>
   </div>
 </div>
@@ -638,7 +640,7 @@ tr:last-child td{border-bottom:none}
     <h3>Предложения нейросети</h3>
     <p class="modal-sub">Отметьте, что применить. Нейросеть может ошибаться — снятие маски с ФИО и
       организаций она предлагает только для слов без признаков имени.</p>
-    <div id="reviewBody" style="max-height:52vh;overflow:auto"></div>
+    <div id="reviewBody" style="max-height:calc(52vh / var(--zoom));overflow:auto"></div>
     <div class="modal-btns" style="margin-top:14px">
       <button class="btn-modal-cancel" onclick="closeReview()">Отмена</button>
       <button class="btn-modal-ok" onclick="applyReview()">Применить и пересобрать файл</button>
@@ -696,6 +698,10 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<script>
+// Один размер текста (стандарт 1.5): страница ×17/14 через zoom (--zoom в CSS)
+function pageZoom(){ return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zoom'))||1; }
+</script>
 <script>
 // ─── State ───────────────────────────────────────────────────────────────────
 const S = {
@@ -1268,8 +1274,9 @@ document.addEventListener('mouseup',e=>{
     const sel=window.getSelection(), t=sel?sel.toString().trim():'';
     if(!t||t.length<2||t.length>300||/\[[A-Z]+_\d+\]/.test(t)||!$('pvBody').contains(sel.anchorNode)){btn.classList.add('hidden');return;}
     const r=sel.getRangeAt(0).getBoundingClientRect(), box=$('pvBody').getBoundingClientRect();
-    btn.style.left=Math.min(r.left-box.left+$('pvBody').offsetLeft, box.width-130)+'px';
-    btn.style.top=(r.bottom-box.top+$('pvBody').offsetTop+6)+'px';
+    const Z=pageZoom();     // координаты выделения - экранные, style.left на увеличенной странице умножается на --zoom
+    btn.style.left=Math.min((r.left-box.left)/Z+$('pvBody').offsetLeft, box.width/Z-130)+'px';
+    btn.style.top=((r.bottom-box.top)/Z+$('pvBody').offsetTop+6)+'px';
     btn.dataset.text=t; btn.classList.remove('hidden');
   },0);
 });
@@ -1450,7 +1457,8 @@ function tokPopup(key,e){
     </div>
     ${same.length?`<select onchange="if(this.value)pvMerge('${key}',this.value)"><option value="">Объединить с…</option>${same.map(([k,v])=>`<option value="${k}">${k}: ${esc((v.forms||[])[0]||'')}</option>`).join('')}</select>`:''}`;
   pop.classList.remove('hidden');
-  const x=Math.min(e.clientX,window.innerWidth-320), y=Math.min(e.clientY+12,window.innerHeight-220);
+  const Z=pageZoom();     // clientX - экранные пиксели; на увеличенной странице px внутри умножаются на --zoom
+  const x=Math.min(e.clientX,window.innerWidth-320*Z)/Z, y=Math.min(e.clientY+12,window.innerHeight-220*Z)/Z;
   pop.style.left=x+'px'; pop.style.top=y+'px';
 }
 document.addEventListener('click',e=>{const pop=$('tokPop');if(pop&&!pop.contains(e.target))pop.classList.add('hidden');});
@@ -1831,7 +1839,7 @@ async function doShutdown(){
   if(!ok)return;
   try{await apiFetch('/api/shutdown',{method:'POST'});}catch{}
   setTimeout(() => { try { window.close(); } catch(e) {} }, 600);
-  document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#07091a;color:#4d6080;font-family:sans-serif"><div style="font-size:52px;margin-bottom:14px">👋</div><p style="font-size:16px;color:#8fa0be">Приложение завершено</p><p style="font-size:12px;margin-top:6px">Вкладку можно закрыть</p></div>`;
+  document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:calc(100vh / var(--zoom));background:#07091a;color:#4d6080;font-family:sans-serif"><div style="font-size:52px;margin-bottom:14px">👋</div><p style="font-size:16px;color:#8fa0be">Приложение завершено</p><p style="font-size:12px;margin-top:6px">Вкладку можно закрыть</p></div>`;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

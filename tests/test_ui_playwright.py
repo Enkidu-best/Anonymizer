@@ -677,3 +677,14 @@ def test_gpu_busy_dialog_before_llm(page, server, tmp_path):
         hd.wait(10)
         hd.stdin.close()
         hd.stdout.close()
+
+
+def test_one_text_size_and_popup_at_click(page):
+    """Единый вид 01 (стандарт 1.5): основной текст 17 px (страница ×17/14 через zoom); окно у метки - там, где щёлкнули."""
+    zoom = page.evaluate("pageZoom()")
+    body = page.evaluate("parseFloat(getComputedStyle(document.body).fontSize)")
+    assert abs(body * zoom - 17) < 0.6
+    page.evaluate("PV = {forms: {PER_1: {type: 'PER', forms: ['Иванов']}}}")
+    page.evaluate("tokPopup('PER_1', {clientX: 300, clientY: 200})")
+    r = page.evaluate("(() => { const b = document.getElementById('tokPop').getBoundingClientRect(); return [b.left, b.top]; })()")
+    assert abs(r[0] - 300) < 2 and abs(r[1] - 212) < 2, r
