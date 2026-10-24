@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -116,8 +117,11 @@ class Budget(unittest.TestCase):
         hum._drop(hum._qfile)
         hum._qfile = None
         self.settings(pause_background=True)
-        self.assertTrue(bg.checkpoint(poll=0.05))
-        bg.release()
+        stop = threading.Event()
+        threading.Timer(0.5, stop.set).start()
+        self.assertTrue(bg.checkpoint(cancel=stop, poll=0.05))   # уступил и ждёт кнопки, а не забирает снова
+        self.assertFalse(bg.held)
+        self.assertIsNone(hl.status(self.lock))
 
     # B7: замок свободен, но рядом работает другой и места не хватает - ждать
     def test_free_lock_but_alongside_full(self):
@@ -164,6 +168,57 @@ class Budget(unittest.TestCase):
         lk.release()
         self.settings(needs_gb={"Legal Doc Builder": {"gb": 6, "measured": False}})
         self.assertFalse(self.mine(need=2).try_acquire())
+
+    # B11: «Пауза фону» при свободной видеокарте - фон не берёт, человек берёт
+    def test_pause_blocks_background_on_free_gpu(self):
+        self.settings(pause_background=True)
+        bg = self.mine(need=None, who="background", program="Прогон")
+        self.assertFalse(bg.try_acquire())
+        hum = self.mine(need=None, program="Herald")
+        self.assertTrue(hum.try_acquire())
+        hum.release()
+        self.settings(pause_background=False)
+        self.assertTrue(bg.try_acquire())
+        bg.release()
+
+    # B12: «Отпустить» - фон уступает на контрольной точке и ждёт «Вернуть»; другим фоном очередь не загораживает
+    def test_let_go_and_back(self):
+        bg = self.mine(need=None, who="background", program="Прогон")
+        self.assertTrue(bg.try_acquire())
+        hl.let_go(self.lock, bg.pid)
+        self.assertTrue(hl.status_json(self.lock)["holder"]["off"])
+        box = {}
+        t = threading.Thread(target=lambda: box.update(y=bg.checkpoint(poll=0.05)))
+        t.start()
+        for _ in range(100):
+            if bg.waiting:
+                break
+            threading.Event().wait(0.02)
+        self.assertTrue(bg.waiting and hl.status(self.lock) is None)
+        self.assertTrue(hl.status_json(self.lock)["queue"][0]["off"])
+        other = hl.HeavyLock("Второй прогон", who="background", path=self.lock, idle_after=None, pid=os.getppid())
+        self.assertTrue(other.try_acquire())                      # отпущенный не стоит впереди
+        other.release()
+        hl.let_go(self.lock, bg.pid, on=False)                    # «Вернуть»
+        t.join(5)
+        self.assertTrue(box["y"] and bg.held)
+        bg.release()
+
+    # B13: «Отпустить» не действует на работу человека; отметка умершего процесса снимается
+    def test_let_go_human_and_dead(self):
+        hl.let_go(self.lock, os.getpid())
+        hum = self.mine(need=None, program="Herald")
+        self.assertTrue(hum.try_acquire())
+        hum.release()
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        hl.let_go(self.lock, p.pid)
+        self.assertFalse(hl.held_off(self.lock, p.pid))
+        self.assertFalse((hl.queue_dir(self.lock) / f"off-{p.pid}").exists())
+        out = subprocess.run(["bash", str(SH), "--path", str(self.lock), "back", str(os.getpid())],
+                             capture_output=True, text=True).stdout
+        self.assertIn("Режим:", out)
+        self.assertFalse(hl.held_off(self.lock, os.getpid()))
 
 
 if __name__ == "__main__":

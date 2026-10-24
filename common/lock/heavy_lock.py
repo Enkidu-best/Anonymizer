@@ -9,9 +9,11 @@
   * очередь честная: сначала люди, потом фон, внутри - по времени постановки;
   * фон отдаёт замок ждущему человеку на своей контрольной точке (`checkpoint`);
   * сессия человека без действий 15 минут отпускает замок сама (`idle_check`), при продолжении - `resume`;
-  * «Запустить сейчас» - работа поверх чужого замка, видна в очереди как `now-…`.
+  * «Запустить сейчас» - работа поверх чужого замка, видна в очереди как `now-…`;
+  * «Пауза фону» и «Отпустить» (страница «Видеокарта», 1.3.0): фон на паузе или отпущенный не берёт видеокарту и
+    отдаёт её на контрольной точке.
 
-Командная строка (её вызывает heavy_lock.sh): take / release / status / yield / run.
+Командная строка (её вызывает heavy_lock.sh): take / release / status / yield / run / gpu / mode / pause-bg / let-go / back.
 """
 from __future__ import annotations
 
@@ -155,6 +157,38 @@ def save_settings(lock: Path, **changes) -> dict:
     tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, settings_path(lock))
     return settings(lock)
+
+
+def _off_file(lock: Path, pid: int | None) -> Path:
+    return queue_dir(lock) / f"off-{pid}"
+
+
+def held_off(lock: Path, pid: int | None) -> bool:
+    """Фон этого процесса отпущен кнопкой «Отпустить» (README, 12): не берёт видеокарту, пока не «Вернуть».
+    Процесс завершился - отметка снимается."""
+    f = _off_file(lock, pid)
+    if not pid or not f.exists():
+        return False
+    if not alive(pid):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def let_go(lock: Path, pid: int, on: bool = True) -> None:
+    """«Отпустить» (on) / «Вернуть» (off) фон процесса pid. Работу человека не трогает - её отпускают в её окне."""
+    f = _off_file(lock, pid)
+    if on:
+        queue_dir(lock).mkdir(exist_ok=True)
+        f.write_text(dt.datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+    else:
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 def need_of(h: "Holder", cfg: dict) -> float | None:
@@ -342,8 +376,16 @@ def status_json(path: Path | None = None, me: "HeavyLock | None" = None) -> dict
     q = queue(lock)
     cfg = settings(lock)
     used, _ = used_gb(lock, cfg)
-    d = {"free": h is None, "holder": h.to_json() if h else None,
-         "queue": [w.to_json() for w in q], "alongside": [w.to_json() for w in alongside(lock)],
+    def js(w: Holder) -> dict:
+        r = w.to_json()
+        r["off"] = w.background and held_off(lock, w.pid)
+        n = need_of(w, cfg)
+        row = cfg["needs_gb"].get(w.program) or {}
+        r["gb"], r["gb_how"] = n, ("declared" if w.need_gb else ("measured" if row.get("measured") else "unknown"))
+        return r
+
+    d = {"free": h is None, "holder": js(h) if h else None,
+         "queue": [js(w) for w in q], "alongside": [js(w) for w in alongside(lock)],
          "version": VERSION, "mode": cfg["mode"], "budget_gb": cfg["budget_gb"], "used_gb": used,
          "pause_background": cfg["pause_background"]}
     if me is not None:
@@ -456,7 +498,7 @@ class HeavyLock:
     # ---------- очередь
     def ahead(self) -> int:
         """Сколько живых ожидающих передо мной. Не в очереди - как будто встал в конец своего класса."""
-        q = [h for h in queue(self.path) if h.token != self.token]
+        q = [h for h in queue(self.path) if h.token != self.token and not self._parked(h)]
         if self._qfile is not None:
             mine = Holder(self.program, self.pid, who=self.who, ts=self._ts, file=self._qfile)
             return sum(1 for h in q if _order(h) < _order(mine))
@@ -464,8 +506,17 @@ class HeavyLock:
             return sum(1 for h in q if h.who == HUMAN)
         return len(q)
 
+    def _parked(self, h: Holder) -> bool:
+        """Фон на паузе или отпущенный ждёт не своей очереди, а кнопки - другим не загораживает (README, 12)."""
+        if not h.background:
+            return False
+        return held_off(self.path, h.pid) or settings(self.path)["pause_background"]
+
+    def _bg_parked(self) -> bool:
+        return self.who == BACKGROUND and (settings(self.path)["pause_background"] or held_off(self.path, self.pid))
+
     def ahead_names(self) -> list[str]:
-        q = [h for h in queue(self.path) if h.token != self.token]
+        q = [h for h in queue(self.path) if h.token != self.token and not self._parked(h)]
         return [h.program for h in q][: max(0, self.ahead())]
 
     # ---------- взять / отдать
@@ -482,6 +533,8 @@ class HeavyLock:
                 self.unavailable = f"{lock} - не папка"
                 self.held = True
                 return True
+            if self._bg_parked():
+                return False                    # «Пауза фону» / «Отпустить» - ждать кнопки, а не очереди
             if self.ahead() > 0:
                 return False
             for _ in range(3):              # повтор - после снятия брошенного замка
@@ -710,7 +763,7 @@ class HeavyLock:
         if not self.held or self.outside or self.unavailable or self.who != BACKGROUND:
             return False
         cfg = settings(self.path)
-        if not (cfg["pause_background"] or (cfg["mode"] != "night" and self.human_waiting())):
+        if not (self._bg_parked() or (cfg["mode"] != "night" and self.human_waiting())):
             return False
         self.release(reason="yield")
         self.acquire(cancel=cancel, on_wait=on_wait, poll=poll)
@@ -768,9 +821,11 @@ def _cli_gpu(lock: Path) -> int:
         n = need_of(h, cfg)
         row = cfg["needs_gb"].get(h.program) or {}
         how = "заявлено" if h.need_gb else ("замер" if row.get("measured") else "не замерено")
-        print(f"  работает: {_describe(h)} - {'?' if n is None else f'{n:g} ГБ'} ({how})")
+        off = " · отпущен, уступит на контрольной точке" if h.background and held_off(lock, h.pid) else ""
+        print(f"  работает: {_describe(h)} - {'?' if n is None else f'{n:g} ГБ'} ({how}){off}")
     for i, w in enumerate(queue(lock), 1):
-        print(f"  ждёт {i}: {_describe(w)}")
+        off = " · отпущен - ждёт «Вернуть»" if w.background and held_off(lock, w.pid) else ""
+        print(f"  ждёт {i}: {_describe(w)}{off}")
     return 0
 
 
@@ -811,6 +866,8 @@ def main(argv: list[str] | None = None) -> int:
     md.add_argument("mode", choices=MODES)
     pb = sub.add_parser("pause-bg")
     pb.add_argument("state", choices=("on", "off"))
+    for name in ("let-go", "back"):             # «Отпустить» / «Вернуть» фон процесса (README, 12)
+        sub.add_parser(name).add_argument("pid", type=int)
     a = ap.parse_args(argv)
     lock = Path(a.path) if a.path else default_path()
     if a.cmd == "status":
@@ -822,6 +879,9 @@ def main(argv: list[str] | None = None) -> int:
         return _cli_gpu(lock)
     if a.cmd == "pause-bg":
         save_settings(lock, pause_background=a.state == "on")
+        return _cli_gpu(lock)
+    if a.cmd in ("let-go", "back"):
+        let_go(lock, a.pid, on=a.cmd == "let-go")
         return _cli_gpu(lock)
 
     def log(msg: str) -> None:
@@ -880,12 +940,14 @@ def main(argv: list[str] | None = None) -> int:
         log("видеокарта отдана")
         return 0
     # yield: контрольная точка фона
-    if not mine or not any(w.who == HUMAN for w in queue(lock)):
+    cfg = settings(lock)
+    parked = a.who == BACKGROUND and (cfg["pause_background"] or held_off(lock, pid))
+    if not mine or not (parked or (cfg["mode"] != "night" and any(w.who == HUMAN for w in queue(lock)))):
         return 0
     what = h.what
     shutil.rmtree(lock, ignore_errors=True)
     journal(lock, "yield", a.program, pid, a.who, what)
-    log("ждёт человек - видеокарта отдана, встаю в очередь")
+    log("фон на паузе - видеокарта отдана, жду кнопки" if parked else "ждёт человек - видеокарта отдана, встаю в очередь")
     lk.what = what
     if not lk.acquire(on_wait=waiting, wait=a.wait_min * 60, poll=5):
         return 75
