@@ -229,7 +229,8 @@ def review(original_text: str, masked_text: str, mappings: list, budget_s: float
     missed, t1 = [], t0
     try:
         with log.stage('llm_review'):
-            f = ex.submit(review_list, original_text, masked_text, mappings, 40, deadline)
+            from core import heavy      # рабочий поток - с замком видеокарты вызвавшего (heavy.carry)
+            f = ex.submit(heavy.carry(review_list), original_text, masked_text, mappings, 40, deadline)
             try:
                 r = f.result(timeout=max(1, deadline - time.time()))
             except _Timeout:

@@ -905,3 +905,14 @@ def test_llm_proposals_unmask_unchecked(page, tmp_path):
     assert not page.is_checked('.dlg input[data-kind=remove]')
     assert page.is_checked('.dlg input[data-kind=merge]')
     page.keyboard.press('Escape')
+
+
+def test_build_restart_by_launcher_and_window(chromium, tmp_path):
+    """Стандарт 6.5 («_Порядок 03», п. 1): сервер старой сборки → ярлык (start.sh / bi_ensure_fresh) перезапускает его,
+    окно сначала показывает «Программа обновилась», потом видит новый `build`."""
+    from common.buildinfo.testing import check_restart
+    env = {'ANONYMIZER_DATA_DIR': str(tmp_path / 'data'), 'ANONYMIZER_LOG_DIR': str(tmp_path / 'logs'),
+           'ANONYMIZER_PORT': '8075', 'ANONYMIZER_NO_OPEN': '1'}
+    res = check_restart([sys.executable, 'app.py'], 8075, ROOT, env, ready_selector='#content h1', browser=chromium)
+    bad = [k for k, v in res.items() if not v]
+    assert not bad, (bad, res)

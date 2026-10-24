@@ -22,6 +22,9 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 
 from core.version import __version__ as APP_VERSION
 from core import session_files as sf
+from common.buildinfo import buildinfo as bi
+
+BUILD = bi.at_start()        # код сборки при старте (стандарт 6.5, общий блок buildinfo)
 
 BUNDLE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BUNDLE_DIR / 'static'
@@ -188,8 +191,21 @@ def index():
 @app.route('/api/info')
 def info():
     """Version of the server - the window compares it with its own (standard 6.5, was Р-32)."""
-    return jsonify({'name': 'Anonymizer', 'version': APP_VERSION, 'data_dir': str(DATA_DIR),
+    return jsonify({'name': 'Anonymizer', 'version': APP_VERSION, 'data_dir': str(DATA_DIR), **bi.info(),
                     'migration': {k: v for k, v in MIGRATION.items() if k in ('done', 'moved', 'error')}})
+
+
+@app.route('/api/restart', methods=['POST'])
+def restart():
+    """Сервер старше кода на диске: «Перезапустить» в окне и ярлык (общий блок buildinfo) - тот же процесс заново."""
+    journal.event('restart', build=BUILD, disk_build=bi.code_hash())
+    bi.restart_later()
+    return jsonify({'ok': True})
+
+
+@app.route('/common/buildinfo/<path:name>')
+def common_buildinfo(name):
+    return send_from_directory(BUNDLE_DIR / 'common' / 'buildinfo' / 'web', name)
 
 
 @app.route('/api/status')

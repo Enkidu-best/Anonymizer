@@ -110,3 +110,28 @@ def test_status_and_review_waits_in_queue(foreign, monkeypatch, tmp_path):
             break
         time.sleep(0.1)
     assert appmod.REVIEWS[jid]['status'] == 'done'
+
+
+def test_worker_thread_inherits_own_lock(monkeypatch):
+    """Ошибка 25.10 (стенд с настоящей моделью): проверка нейросетью идёт в рабочем потоке; без heavy.carry его запрос
+    ждал собственный замок программы 60 с и падал «Видеокарта занята»."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setattr(heavy, 'WAIT', 1.0)
+
+    def one_request():
+        with heavy.call('запрос из рабочего потока'):
+            return 'ok'
+    with heavy.job('wait', 'проверка'):
+        t = time.time()
+        with ThreadPoolExecutor(1) as ex:
+            assert ex.submit(heavy.carry(one_request)).result(timeout=10) == 'ok'
+        assert time.time() - t < 0.5
+        with ThreadPoolExecutor(1) as ex:          # без carry - ждёт свой же замок (так было)
+            fut = ex.submit(one_request)
+            try:
+                fut.result(timeout=10)
+                waited = False
+            except heavy.Busy:
+                waited = True
+        assert waited

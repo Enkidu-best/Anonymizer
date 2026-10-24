@@ -352,7 +352,7 @@ async function pollStatus() {
 async function checkVersion() {
   try {
     S.info = await api('/api/info');
-    S.updated = S.info.version !== UI_VERSION;
+    S.updated = S.info.version !== UI_VERSION || !!S.buildStale;
     $('ver').textContent = `${t('app.name')} ${shortVer(S.info.version)}`;
   } catch { /* offline - баннер */ }
   renderBanner();
@@ -372,7 +372,7 @@ function renderBanner() {
   b.innerHTML = html;
   b.classList.toggle('hidden', !html);
   const r = $('b-restart');
-  if (r) r.onclick = () => location.reload();
+  if (r) r.onclick = () => (window.BuildInfo ? BuildInfo.restart() : location.reload());
 }
 
 // ── Переходы ─────────────────────────────────────────────────────────────────
@@ -448,5 +448,7 @@ async function boot() {
   try { S.settings = await api('/api/settings'); } catch { S.settings = {}; }
   render();
   pollStatus();
+  // код сборки (стандарт 6.5, общий блок buildinfo): сервер старше кода или окно старше сервера - та же полоса
+  if (window.BuildInfo) BuildInfo.watch({ lang: LANG, onStale: stale => { S.buildStale = stale; S.updated = stale || (S.info && S.info.version !== UI_VERSION); renderBanner(); } });
 }
 document.addEventListener('DOMContentLoaded', boot);

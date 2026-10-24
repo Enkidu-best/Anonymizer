@@ -46,3 +46,4 @@ logs/
 # Running program, the .app built by the shared builder (standard 6.2)
 .run/
 /Anonymizer.app/
+tests/bench/fails_llm.json

@@ -84,6 +84,20 @@ def job(choice: str | None, what: str, wait: float | None = None, cancel: thread
         lk.release()
 
 
+def carry(fn):
+    """fn для другого потока с тем же замком, что у вызвавшего: внутри job() запросы рабочего потока (проверка
+    нейросетью в ThreadPoolExecutor) не ждут собственный замок программы (ошибка 25.10: ждали 60 с и сдавались)."""
+    held, cpu = getattr(_local, 'held', 0), getattr(_local, 'cpu', False)
+
+    def run(*a, **kw):
+        _local.held, _local.cpu = held, cpu
+        try:
+            return fn(*a, **kw)
+        finally:
+            _local.held, _local.cpu = 0, False
+    return run
+
+
 @contextlib.contextmanager
 def call(what: str = 'запрос к нейросети'):
     """One model request: inside job() or on the CPU - nothing to take; otherwise take the lock for this request."""

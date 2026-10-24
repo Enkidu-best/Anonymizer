@@ -27,10 +27,11 @@ fi
 "$PY" -c "import flask, docx, pymupdf, spacy, pymorphy3, platformdirs" 2>/dev/null || "$PY" -m pip install -q -r requirements.txt
 
 echo "2/3 Сервер"
-want="$("$PY" -c 'from core.version import __version__; print(__version__)')"
+. "$ROOT/common/buildinfo/launch.sh"
 running="$(curl -sf "http://127.0.0.1:$PORT/api/info" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version","") if d.get("name")=="Anonymizer" else "")' 2>/dev/null || true)"
-if [ -n "$running" ] && [ "$running" != "$want" ]; then
-  echo "  работает версия $running - перезапускаю на $want"
+# код сборки (стандарт 6.5): сервер старше кода на диске - перезапустить; старый без /api/restart - остановить и запустить
+if [ -n "$running" ] && ! bi_ensure_fresh "http://127.0.0.1:$PORT/api/info" "$PY" "$ROOT" "$RUN/server.log"; then
+  echo "  сервер старой сборки - останавливаю и запускаю заново"
   curl -sf -X POST "http://127.0.0.1:$PORT/api/shutdown" >/dev/null || true
   for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$PORT/api/info" >/dev/null || break; sleep 0.3; done
   running=""
