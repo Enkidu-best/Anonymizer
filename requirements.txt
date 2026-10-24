@@ -11,7 +11,7 @@ pillow-heif==1.8.0
 spacy==3.8.16
 pymorphy3==2.0.6
 pymorphy3-dicts-ru==2.4.417150.4580142
-pywebview==6.2.1
+platformdirs==4.3.6       # data and journal outside the program folder (standard 6.4)
 # macOS: offline OCR (Apple Vision) for scans and photos
 pyobjc-framework-Vision==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"

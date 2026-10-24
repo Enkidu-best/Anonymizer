@@ -250,8 +250,8 @@ def _edits(client, sid, src, anon_old, r_old, orig_p, work):
                     json={'canonical_form': by_token[t2]['original_form'] + ' (изм.)'})
     client.json('post', f'/api/sessions/{sid}/reprocess')
     files = client.json('get', f'/api/sessions/{sid}/files')['files']
-    new_anon_name = next((f['output'] for f in files if f['output'].endswith(anon_old.suffix)
-                          and '_anon' in f['output']), None)
+    new_anon_name = next((f['output'] for f in files if f['section'] == 'anon' and f['status'] == 'done'
+                          and (f['output'] or '').endswith(anon_old.suffix)), None)
     if new_anon_name:
         new_anon = client.download(sid, new_anon_name, work / ('anon2' + anon_old.suffix))
         if victim in TOKEN_RE.findall('\n'.join(places(new_anon)['body'])):

@@ -14,7 +14,7 @@ class _Conn(sqlite3.Connection):
             self.close()
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def get_conn(db_path):
@@ -42,13 +42,6 @@ def init_db(db_path):
                 entity_type    TEXT NOT NULL,
                 created_at     TEXT DEFAULT (datetime('now','localtime')),
                 UNIQUE(session_id, original_form, entity_type)
-            );
-
-            CREATE TABLE IF NOT EXISTS user_patterns (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                pattern     TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                created_at  TEXT DEFAULT (datetime('now','localtime'))
             );
 
             CREATE TABLE IF NOT EXISTS exclusions (
@@ -128,6 +121,20 @@ def init_db(db_path):
             conn.execute("ALTER TABLE mappings ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         if 'opf' not in cols:      # legal form of a company as in the document («ООО»), task 3 §2.2
             conn.execute("ALTER TABLE mappings ADD COLUMN opf TEXT")
+        # v5 (4.0): the Dictionary - «Всегда маскировать» (known_entities, now with where it came from)
+        # and «Никогда не маскировать» (never_mask); both act in every session (description 3.11)
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(known_entities)')}
+        if 'source' not in cols:
+            conn.execute('ALTER TABLE known_entities ADD COLUMN source TEXT')
+            conn.execute("UPDATE known_entities SET source='legacy' WHERE source IS NULL")
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS never_mask (
+                value       TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                source      TEXT,
+                added_at    TEXT DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (value, entity_type)
+            )''')
         version = conn.execute('PRAGMA user_version').fetchone()[0]
         if version < SCHEMA_VERSION:
             # v2.2 databases may hold duplicate tokens from the old COUNT(*)+1 bug — renumber
@@ -191,16 +198,44 @@ def rename_session(db_path, session_id: str, name: str):
 
 
 def get_all_sessions(db_path):
+    """Sessions, the newest first. records - active entries of the replacement table: one token is one
+    record, the same number as in «Таблица замен · N» (description 3.9, was Р-16)."""
     with get_conn(db_path) as conn:
         rows = conn.execute('''
             SELECT s.id, s.name, s.created_at,
-                   COUNT(m.id) as mapping_count
+                   COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.token END) AS records
             FROM sessions s
             LEFT JOIN mappings m ON m.session_id = s.id
             GROUP BY s.id
-            ORDER BY s.created_at DESC
+            ORDER BY s.created_at DESC, s.rowid DESC
         ''').fetchall()
     return [dict(r) for r in rows]
+
+
+def get_session(db_path, session_id: str):
+    return next((s for s in get_all_sessions(db_path) if s['id'] == session_id), None)
+
+
+def default_session_name(db_path, today=None) -> str:
+    """«Сессия 24.10»; the second one of the day - «Сессия 24.10 (2)». Never from a file name (was Р-39)."""
+    import datetime
+    base = f'Сессия {(today or datetime.date.today()):%d.%m}'
+    with get_conn(db_path) as conn:
+        names = {r['name'] for r in conn.execute('SELECT name FROM sessions')}
+    if base not in names:
+        return base
+    n = 2
+    while f'{base} ({n})' in names:
+        n += 1
+    return f'{base} ({n})'
+
+
+def old_sessions(db_path, days: int) -> list:
+    """Sessions created more than `days` days ago - deleted whole by the retention term (3.9)."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT id FROM sessions WHERE created_at < datetime('now','localtime', ?)",
+                            (f'-{int(days)} days',)).fetchall()
+    return [r['id'] for r in rows]
 
 
 def delete_session(db_path, session_id: str):
@@ -575,45 +610,6 @@ def get_occurrences(db_path, session_id: str, file_key: str) -> dict:
         out.setdefault(r['token'], []).append(r['original'])
     return out
 
-def get_top_patterns(db_path, entity_type=None, limit=20) -> list:
-    with get_conn(db_path) as conn:
-        if entity_type:
-            rows = conn.execute(
-                'SELECT id, pattern, entity_type, created_at '
-                'FROM user_patterns WHERE entity_type=? '
-                'ORDER BY created_at DESC LIMIT ?',
-                (entity_type, limit)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                'SELECT id, pattern, entity_type, created_at '
-                'FROM user_patterns '
-                'ORDER BY created_at DESC LIMIT ?',
-                (limit,)
-            ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def save_user_pattern(db_path, pattern: str, entity_type: str):
-    if not pattern.strip():
-        return
-    with get_conn(db_path) as conn:
-        existing = conn.execute(
-            'SELECT id FROM user_patterns WHERE pattern=? AND entity_type=?',
-            (pattern, entity_type)
-        ).fetchone()
-        if not existing:
-            conn.execute(
-                'INSERT INTO user_patterns (pattern, entity_type) VALUES (?,?)',
-                (pattern, entity_type)
-            )
-
-
-def delete_user_pattern(db_path, pattern_id: int):
-    with get_conn(db_path) as conn:
-        conn.execute('DELETE FROM user_patterns WHERE id=?', (pattern_id,))
-
-
 def add_exclusion(db_path, session_id: str, original_form: str, entity_type: str):
     """Mark original_form+entity_type as excluded — skip on reprocess."""
     with get_conn(db_path) as conn:
@@ -642,14 +638,15 @@ def remove_exclusions_for(db_path, session_id: str, value: str, entity_type: str
 def get_exclusions(db_path, session_id: str) -> set:
     """Return set of (original_form, entity_type) to skip during pipeline."""
     with get_conn(db_path) as conn:
-        try:
-            rows = conn.execute(
-                'SELECT original_form, entity_type FROM exclusions WHERE session_id=?',
-                (session_id,)
-            ).fetchall()
-            return ExclusionSet((r['original_form'], r['entity_type']) for r in rows)
-        except Exception:
-            return ExclusionSet()
+        for q in ('SELECT original_form, entity_type FROM exclusions WHERE session_id=? '
+                  'UNION SELECT value, entity_type FROM never_mask',      # Словарь «Никогда не маскировать»
+                  'SELECT original_form, entity_type FROM exclusions WHERE session_id=?'):   # base not moved to 4.0
+            try:
+                rows = conn.execute(q, (session_id,)).fetchall()
+                return ExclusionSet((r['original_form'], r['entity_type']) for r in rows)
+            except sqlite3.OperationalError:
+                continue
+        return ExclusionSet()
 
 
 class ExclusionSet(set):
@@ -681,48 +678,96 @@ class ExclusionSet(set):
         return False
 
 
+def unexclude_token(db_path, session_id: str, token: str) -> list:
+    """«Вернуть маску» / «Вернуть» after «Не маскировать»: the token is active again, its forms leave the
+    session's «не маскировать» list. Returns [(form, type)] of the token."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT original_form, entity_type FROM mappings WHERE session_id=? AND token=? "
+                            "AND status='excluded'", (session_id, token)).fetchall()
+        conn.execute("UPDATE mappings SET status='active' WHERE session_id=? AND token=? AND status='excluded'",
+                     (session_id, token))
+    forms = [(r['original_form'], r['entity_type']) for r in rows]
+    for value, etype in forms:
+        remove_exclusions_for(db_path, session_id, value, etype)
+    return forms
+
+
 def delete_session_exclusions(db_path, session_id: str):
     with get_conn(db_path) as conn:
         conn.execute('DELETE FROM exclusions WHERE session_id=?', (session_id,))
 
 
-# ── Global "known entities" — cross-session learning ─────────────────────────
-def remember_entity(db_path, value: str, entity_type: str):
-    """Record a (value, type) pair so future sessions auto-detect it."""
-    v = (value or '').strip()
-    t = (entity_type or '').strip()
-    if not v or not t:
-        return
+# ── Словарь (description 3.11): «Всегда маскировать» = known_entities, «Никогда не маскировать» = never_mask ──
+# source: 'manual' (added in the Dictionary or «всегда» in the record window), 'unmask' («Не маскировать» → «всегда»),
+# 'legacy' (the hidden memory before 4.0). A value is never in both lists.
+DICT_TABLES = {'always': 'known_entities', 'never': 'never_mask'}
+
+
+def dict_add(db_path, value: str, entity_type: str, which: str = 'always', source: str = 'manual',
+             added_at: str = None) -> bool:
+    """Puts a value into one list and takes it out of the other. True - it was in the other list."""
+    v, t = (value or '').strip(), (entity_type or '').strip()
+    if not v or not t or which not in DICT_TABLES:
+        return False
+    other = 'never' if which == 'always' else 'always'
+    with get_conn(db_path) as conn:
+        moved = bool(_dict_remove(conn, other, v, t))
+        if which == 'always':
+            conn.execute("INSERT INTO known_entities (value, entity_type, source, last_seen_at) "
+                         "VALUES (?,?,?,COALESCE(?, datetime('now','localtime'))) "
+                         "ON CONFLICT(value, entity_type) DO UPDATE SET seen_count = seen_count + 1",
+                         (v, t, source, added_at))
+        else:
+            conn.execute("INSERT OR IGNORE INTO never_mask (value, entity_type, source, added_at) "
+                         "VALUES (?,?,?,COALESCE(?, datetime('now','localtime')))", (v, t, source, added_at))
+    return moved
+
+
+def _dict_remove(conn, which, value, entity_type):
+    return conn.execute(f'DELETE FROM {DICT_TABLES[which]} WHERE value=? AND entity_type=?',
+                        (value, entity_type)).rowcount
+
+
+def dict_remove(db_path, value: str, entity_type: str, which: str):
+    """✕ in the Dictionary. Returns the removed row (for «Вернуть») or None."""
+    with get_conn(db_path) as conn:
+        row = next((x for x in _dict_rows(conn, which) if x['value'] == value and x['entity_type'] == entity_type),
+                   None)
+        if row:
+            _dict_remove(conn, which, value, entity_type)
+    return row
+
+
+def dict_clear(db_path, which: str) -> int:
+    with get_conn(db_path) as conn:
+        return conn.execute(f'DELETE FROM {DICT_TABLES[which]}').rowcount
+
+
+def _dict_rows(conn, which):
+    if which == 'always':
+        q = ('SELECT value, entity_type, source, last_seen_at AS added_at FROM known_entities '
+             'ORDER BY last_seen_at DESC, value')
+    else:
+        q = 'SELECT value, entity_type, source, added_at FROM never_mask ORDER BY added_at DESC, value'
+    return [dict(r) for r in conn.execute(q)]
+
+
+def dict_list(db_path, which: str) -> list:
     with get_conn(db_path) as conn:
         try:
-            conn.execute(
-                'INSERT INTO known_entities (value, entity_type) VALUES (?,?) '
-                'ON CONFLICT(value, entity_type) DO UPDATE SET '
-                'seen_count = seen_count + 1, '
-                "last_seen_at = datetime('now','localtime')",
-                (v, t)
-            )
-        except Exception:
-            # Fallback for SQLite without ON CONFLICT support (very old)
-            existing = conn.execute(
-                'SELECT seen_count FROM known_entities WHERE value=? AND entity_type=?',
-                (v, t)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    'UPDATE known_entities SET seen_count = seen_count + 1 '
-                    'WHERE value=? AND entity_type=?',
-                    (v, t)
-                )
-            else:
-                conn.execute(
-                    'INSERT INTO known_entities (value, entity_type) VALUES (?,?)',
-                    (v, t)
-                )
+            return _dict_rows(conn, which)
+        except sqlite3.OperationalError:        # the move to 4.0 failed and was rolled back (description 5.4)
+            return []
 
 
-def get_known_entities(db_path, limit: int = 500) -> list:
-    """Return list of {value, entity_type, seen_count} ordered by frequency."""
+def dict_has(db_path, value: str, entity_type: str, which: str) -> bool:
+    with get_conn(db_path) as conn:
+        return conn.execute(f'SELECT 1 FROM {DICT_TABLES[which]} WHERE value=? AND entity_type=?',
+                            (value, entity_type)).fetchone() is not None
+
+
+def get_known_entities(db_path, limit: int = 5000) -> list:
+    """«Всегда маскировать»: {value, entity_type, seen_count} - applied first in every session."""
     with get_conn(db_path) as conn:
         rows = conn.execute(
             'SELECT value, entity_type, seen_count FROM known_entities '

@@ -28,20 +28,30 @@ ALLOWED_EXTENSIONS = {'.txt', '.pdf', '.rtf'} | OFFICE_EXT | SHEET_EXT | CONVERT
 # Validation
 # ─────────────────────────────────────────────────────────────────────────────
 
+class FileRejected(ValueError):
+    """A file the program does not process; `code` - the line of the error table (description 4.6):
+    format / scan_windows / convert."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
 def validate_file(filepath: Path):
+    """(ok, message, code) - code is the error kind for the window (description 4.6)."""
     from core import ocr
     ext = filepath.suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         return False, (f'Формат «{ext}» не поддерживается. '
-                       f'Поддерживаются: {", ".join(sorted(ALLOWED_EXTENSIONS))}')
+                       f'Поддерживаются: {", ".join(sorted(ALLOWED_EXTENSIONS))}'), 'format'
     if ext in IMAGE_EXT and not ocr.available():
-        return False, 'Распознавание изображений доступно только на macOS.'
+        return False, 'Распознавание изображений доступно только на macOS.', 'scan_windows'
     if ext == '.pdf' and not _pdf_has_text_layer(filepath) and not ocr.available():
         return False, ('PDF не содержит текстового слоя (скан). '
-                       'Распознавание сканов доступно только на macOS.')
+                       'Распознавание сканов доступно только на macOS.'), 'scan_windows'
     if ext in CONVERT_EXT and not _converter():
-        return False, f'Для «{ext}» нужен macOS (textutil) или LibreOffice. Сохраните файл как DOCX.'
-    return True, ''
+        return False, f'Для «{ext}» нужен macOS (textutil) или LibreOffice. Сохраните файл как DOCX.', 'convert'
+    return True, '', ''
 
 
 def _pdf_has_text_layer(filepath: Path) -> bool:
@@ -175,7 +185,8 @@ def _unglue_line_ends(pdf: Path, docx: Path):
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SUFFIXES = ('_anon', '_restored')
+_SUFFIXES = ('_anon', '_restored', ' (данные возвращены)')
+RESTORED_SUFFIX = ' (данные возвращены)'      # «Претензия покупателю (данные возвращены).docx» (правка 1)
 _PREFIXES = ('anonymized_', 'deanonymized_', 'anon_', 'deanon_')
 
 
@@ -193,17 +204,19 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
                           session_id: str, db_path, mode: str,
                           use_spacy: bool = True,
                           use_llm: bool = False, llm_only: bool = False, pdf_to_word: bool = None,
-                          keep_pdf: bool = None) -> dict:
+                          keep_pdf: bool = None, restore_llm: bool = True) -> dict:
     """pdf_to_word: a PDF with a text layer is anonymized as a Word file (settings default);
-    keep_pdf: also the anonymized PDF (result['extra_output'])."""
+    keep_pdf: also the anonymized PDF (result['extra_output']);
+    restore_llm: False - the case on restore only by the rules («Отмена» in «Видеокарта занята», description 3.7)."""
     from core import settings as user_settings
     st = user_settings.get()
     pdf_to_word = st['pdf_to_word'] if pdf_to_word is None else pdf_to_word
     keep_pdf = st['keep_pdf'] if keep_pdf is None else keep_pdf
-    _STATE.llm_only = llm_only     # «Только нейросеть»: rules really switched off
-    valid, err = validate_file(input_path)
+    _STATE.llm_only = llm_only     # «Только нейросеть» (scripts/llm_only_eval.py): rules really switched off
+    _STATE.restore_llm = restore_llm
+    valid, err, code = validate_file(input_path)
     if not valid:
-        raise ValueError(err)
+        raise FileRejected(err, code)
 
     ext = input_path.suffix.lower()
     # macOS stores names decomposed (й = и + ◌̆) — compose before matching
@@ -231,7 +244,8 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             _STATE.log, _STATE.places, _STATE.reps = [], [], {}
             with log.stage('process'):
                 result = _anonymize(src, tmp_out, ext, session_id, db_path, use_spacy, use_llm)
-            name = f'{anonymize_filename(stem, session_id, db_path)}_anon{out_ext}'
+            # only tokens in the name of the downloaded file (правка 6): «Договор поставки [FIO_1].docx»
+            name = f'{anonymize_filename(stem, session_id, db_path)}{out_ext}'
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
             save_occurrences(db_path, session_id, final.name, _STATE.log)
@@ -254,7 +268,7 @@ def process_uploaded_file(input_path: Path, output_dir: Path,
             result['restore'] = dict(stats.stats) if stats else {}
             log.event('restored', ext=ext, **{k: (len(v) if isinstance(v, list) else v)
                                                for k, v in result['restore'].items()})
-            name = f'{restore_text(stem, db_path, session_id)}_restored{out_ext}'
+            name = f'{restore_text(stem, db_path, session_id)}{RESTORED_SUFFIX}{out_ext}'
             final = output_dir / _safe_name(name)
             tmp_out.replace(final)
             if stats is not None:
@@ -424,7 +438,11 @@ def _verify_written(path: Path) -> int:
 
 def _rev_finder(session_id, db_path):
     from core.anonymizer import make_rev_finder
-    _STATE.rev = make_rev_finder(db_path, session_id, file_key=getattr(_STATE, 'file_key', None))
+    from core import settings as user_settings
+    st = user_settings.get()
+    if not getattr(_STATE, 'restore_llm', True):
+        st['use_llm'] = False
+    _STATE.rev = make_rev_finder(db_path, session_id, file_key=getattr(_STATE, 'file_key', None), settings=st)
     return _STATE.rev
 
 
@@ -506,9 +524,13 @@ def leak_check(path: Path, session_id: str, db_path) -> list:
         if len(v) > 3 and any(contains_bounded(text, x) or contains_bounded(flat, x) for x in variants):
             leaks.append({'type': m['entity_type'], 'value': v, 'reason': 'исходное значение'})
     seen = {l['value'] for l in leaks}
+    from core.db import get_exclusions
+    excluded = get_exclusions(db_path, session_id)     # «Не маскировать» and the Dictionary: open on purpose
     for h in find_all(text):
         frag = text[h.start:h.end]
         if ANY_TOKEN_RE.search(frag) or frag in seen or re.fullmatch(r'[\[\]\w]*_\d+\]?', frag):
+            continue
+        if (frag, h.type) in excluded:
             continue
         seen.add(frag)
         leaks.append({'type': h.type, 'value': frag, 'reason': 'найдено повторной проверкой'})

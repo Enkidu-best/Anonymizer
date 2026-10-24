@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository. The development plan and working ru
 
 ## Project
 
-Local-only PII anonymizer/deanonymizer for Russian legal documents (152-FZ, banking and trade secrets). Flask backend + single-page frontend, packaged with PyInstaller. Formats: TXT, DOCX, PDF (text layer only), XLSX, RTF. The owner is a lawyer: talk to them in Russian, briefly, with results and what was verified.
+Local-only PII anonymizer/deanonymizer for Russian legal documents (152-FZ, banking and trade secrets). Flask backend (port 8070) + single-page frontend in a Chrome app window; `.app` by the shared builder. Formats: TXT, DOCX, PDF (text layer only), XLSX, RTF. The owner is a lawyer: talk to them in Russian, briefly, with results and what was verified.
 
 Main metric is **recall**: a missed name leaks abroad, an extra mask only slightly hurts analysis.
 
@@ -12,12 +12,16 @@ Main metric is **recall**: a missed name leaks abroad, an extra mask only slight
 
 ```bash
 python3.12 -m venv .venv312 && .venv312/bin/pip install -r requirements-dev.txt   # Python 3.12
-python app.py                          # native window; --browser / --server
-python -m pytest -q                    # unit + format tests (UI tests need `playwright install chromium`)
+./start.sh                             # server 127.0.0.1:8070 + Chrome app window; NO_BROWSER=1 for checks
+python app.py                          # server only (ANONYMIZER_PORT; tests 8074)
+python -m pytest -q -m "not ui"        # unit + format tests
+python -m pytest -q -m ui              # window scenarios UC-… of docs/Функциональное описание.md (Playwright)
+python scripts/ui_check.py             # contrast (common/a11y), RU/EN alphabet, cut text, dead buttons - every screen
+bash scripts/check_all.sh [--ui]       # before push (pre-push hook)
 python tests/bench/run.py              # recall bench, 200 variants, regex only
 python tests/bench/run.py --ner        # same with spaCy
 # tests/test_holdout_contract.py — contract the rules were NOT tuned on (overfitting guard)
-./build_macos.sh / build_windows.bat   # dist/Anonymizer.app + .dmg / Windows folder
+./build_macos.sh                       # Anonymizer.app by the shared builder (common/app); Windows bat/spec - 3.x, untouched
 python scripts/audit_folder.py <dir>   # local audit of real documents → private/ (git-ignored)
 python scripts/e2e_private.py [--llm]  # END-TO-END on the owner's documents via the HTTP API — run before saying «done»
 python -m pytest tests/e2e             # the same scenario on generated fixtures with a ground truth
@@ -59,10 +63,13 @@ Text-level API: `anonymize_text()` / `restore_text()` (used by the bench and tes
 
 ### Lexicon and the LLM
 [core/lexicon.py](core/lexicon.py): roles of parties, positions, headings, public bodies, «all words ordinary» — never masked by any layer (manual additions excepted). LLM dates only with birth context.
-«Точно» = rules first (file ready in seconds), then [core/llm_review.py](core/llm_review.py) in a background thread (`app._start_review`, `/api/llm-jobs/<id>`, `/apply`): one call classifies all found persons/companies/addresses (unmask is proposed only for non-name-like words), one call looks for misses in suspicious lines only. Proposals are applied by the user. «Только нейросеть» (`llm_only`) really disables the rules.
+4.0: one mode «Обезличить». Setting `use_llm` («Использовать нейросеть», off by default) adds [core/llm_review.py](core/llm_review.py) in a background thread after the rules (`app._start_review`, `/api/llm-jobs/<id>`, `/apply`; «Снять маску» unchecked in the window) and the LLM case choice on restore (`find.prepare` is gated by the same setting). `llm_only` is only `scripts/llm_only_eval.py` (quality measurements).
+
+### Dictionary, sessions, migration (4.0)
+«Словарь»: «Всегда маскировать» = `known_entities` (`source`: manual / unmask / legacy), «Никогда не маскировать» = `never_mask` (added to `get_exclusions` of every session). Values go there only when the user chooses «всегда». Sessions: name «Сессия ДД.ММ» (`db.default_session_name`), deleted whole by `purge_expired` (retention 7/30/90) or the button - no bin (152-FZ data minimization). Files of a session - `core/session_files.py` (`manifest.json` v2: section anon/restore, result). First start of 4.0: `core/migrate.py` (backup `backup-before-4.0/`, counts check, rollback).
 
 ### Journal
-[core/log.py](core/log.py): `logs/` (source) or `~/Library/Logs/Anonymizer` (app); events, stages with durations, counts per type, LLM metrics, job JSON with heartbeat; never values or file names. UI menu «⋯»: open folder, verbose switch (with data, off at start).
+[core/log.py](core/log.py): `~/Library/Logs/Anonymizer` (also from the sources); events, stages with durations, counts per type, LLM metrics, job JSON with heartbeat; never values or file names. Window: Настройки → Служебное: open folder, «Последние задачи», diagnostic mode (with data, off at restart).
 
 ### Format handlers
 [core/handlers.py](core/handlers.py): `process_uploaded_file` → detect once on the whole document text → apply spans place by place → anonymized file name (`anonymize_filename`) → `leak_check` (re-extract output incl. metadata via [core/extract.py](core/extract.py), report originals still present and detector hits outside tokens).
@@ -77,14 +84,14 @@ Text-level API: `anonymize_text()` / `restore_text()` (used by the bench and tes
 - PDF pages with a broken OCR text layer (`text_layer_ok`) are cleaned and re-OCRed; OCR text is assembled by `ocr.layout` (columns, rows, wrapped lines).
 
 ### Paths, app, security
-[app.py](app.py): `DATA_DIR` = repo dir in dev, `~/Library/Application Support/Anonymizer` (or `%APPDATA%`) when frozen, `ANONYMIZER_DATA_DIR` overrides. Uploads older than 30 days are purged at start. `main()`: free port, native window via pywebview (`--browser`, `--server` flags). `_local_only` rejects foreign Host/Origin/cross-site requests. Output names are recorded per input in `uploads/<sid>/manifest.json`. `/api/sessions/<sid>/preview/<file>` (text with tokens, forms, occurrences, leak check) and `/page/<file>/<n>.png` feed the in-app preview; a default session name is replaced by «<file> · date» after the first processing.
-Build: `Anonymizer.spec` (onedir; Mac `.app` + Windows), `build_macos.sh` (icon → icns, PyInstaller, ad-hoc codesign, DMG).
+[app.py](app.py): `DATA_DIR` = platformdirs (`~/Library/Application Support/Anonymizer`) also from the sources, `ANONYMIZER_DATA_DIR` overrides; journal `~/Library/Logs/Anonymizer/` (`ANONYMIZER_LOG_DIR`). Fixed port 8070 (`ANONYMIZER_PORT`), `/api/info` - version for the window check. The window: Chrome `--app` opened by `desktop/launcher.sh` (from `Anonymizer.app`) or `start.sh`. One file per request: upload `POST /api/sessions/<sid>/files`, process `POST /api/sessions/<sid>/process` (progress `/api/progress/<id>`); `/api/process` (several files) stays for scripts and the e2e test. `_local_only` rejects foreign Host/Origin/cross-site requests. Output names, section and result per input - `uploads/<sid>/manifest.json` (`core/session_files.py`); replies for «Вернуть данные» - `uploads/<sid>/replies/`. `/api/sessions/<sid>/preview/<file>` (text with tokens, forms, occurrences, leak check) and `/page/<file>/<n>.png` feed the in-app preview. Session names never come from file names.
+Build: `build_macos.sh` → shared builder `common/app` (C launcher + `desktop/launcher.sh`). `Anonymizer.spec` / `build_windows.bat` - Windows 3.x, not maintained (owner's decision 24.10).
 
 ### Version
 Single source: [core/version.py](core/version.py), shown in the UI via `/api/status`.
 
 ### Frontend
-Single file [static/index.html](static/index.html), no build step.
+[static/index.html](static/index.html) + [static/app.css](static/app.css) (LKD tokens, light/dark) + `static/js/` (core, anon, preview, restore, lists), strings only from `static/i18n/ru.json` / `en.json`, no build step. Description: `docs/Функциональное описание.md` v2.1, mockups `docs/макеты 01/`.
 
 ### Local data never in git
 `Проверка распознавания текста/`, `private/` (audit output: `scripts/audit_folder.py`), `*.bundle`, `*.tar.gz`, `anon.db*`, `uploads/` are git-ignored. Test data must be fictional.

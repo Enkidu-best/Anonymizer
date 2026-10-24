@@ -42,3 +42,7 @@ private/
 
 # Journal (no personal data, but local only)
 logs/
+
+# Running program, the .app built by the shared builder (standard 6.2)
+.run/
+/Anonymizer.app/

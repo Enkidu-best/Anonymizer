@@ -16,7 +16,7 @@ import pytest
 from core.db import (
     get_or_create_token, get_session_mappings, get_reverse_mappings,
     delete_mapping, update_mapping_original, update_mapping,
-    create_session, remember_entity, get_known_entities,
+    create_session, dict_add, get_known_entities,
 )
 from core.anonymizer import (
     anonymize_text_pipeline, _contains_token, _is_bracketed_token,
@@ -128,15 +128,15 @@ def test_normalize_fio_keeps_initials():
     assert 'В.' in out and 'Е.' in out
 
 
-# ── E: cross-session learning ("LLM training") ──────────────────────────────
+# ── E: the Dictionary «Всегда маскировать» (4.0: only when the user chose «всегда») ────────────
 
 def test_manually_added_entity_remembered(tmp_db):
-    """Adding a mapping in session A and processing the same text in session B
+    """Adding a mapping in session A with «всегда» and processing the same text in session B
     must auto-anonymize that value in B."""
     sa = create_session(tmp_db, 'A')
     # Simulate the user manually adding a phone number that regex missed
     get_or_create_token(tmp_db, sa, '+7(800)123-45-67', '+7(800)123-45-67', 'ТЕЛЕФОН')
-    remember_entity(tmp_db, '+7(800)123-45-67', 'ТЕЛЕФОН')
+    dict_add(tmp_db, '+7(800)123-45-67', 'ТЕЛЕФОН', 'always')
 
     # Sanity: it's in known_entities
     known = get_known_entities(tmp_db)
@@ -155,9 +155,9 @@ def test_manually_added_entity_remembered(tmp_db):
 
 
 def test_remember_increments_seen_count(tmp_db):
-    remember_entity(tmp_db, 'foo@bar.ru', 'EMAIL')
-    remember_entity(tmp_db, 'foo@bar.ru', 'EMAIL')
-    remember_entity(tmp_db, 'foo@bar.ru', 'EMAIL')
+    dict_add(tmp_db, 'foo@bar.ru', 'EMAIL', 'always')
+    dict_add(tmp_db, 'foo@bar.ru', 'EMAIL', 'always')
+    dict_add(tmp_db, 'foo@bar.ru', 'EMAIL', 'always')
     known = [k for k in get_known_entities(tmp_db) if k['value'] == 'foo@bar.ru']
     assert known and known[0]['seen_count'] >= 3
 

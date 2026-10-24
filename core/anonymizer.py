@@ -15,7 +15,7 @@ import threading
 from functools import lru_cache
 from typing import Tuple, Dict, List
 
-from core.db import get_or_create_token, get_session_mappings, get_top_patterns
+from core.db import get_or_create_token, get_session_mappings
 from core.detectors import _is_payment_bank
 from core.lexicon import not_pii
 
@@ -34,8 +34,15 @@ _lock = threading.Lock()
 def _do_load():
     global _nlp, _ner_ready, _ner_error, _ner_loading
     try:
-        import traceback
+        import os
+        import time
         import spacy
+        # window tests (description 3.2, UC-A3 / UC-A4): a slow or failed load of the name model
+        if os.environ.get('ANONYMIZER_NER_DELAY'):
+            time.sleep(float(os.environ['ANONYMIZER_NER_DELAY']))
+        if os.environ.get('ANONYMIZER_NER_FAIL') and not os.environ.get('ANONYMIZER_NER_FAIL_ONCE_DONE'):
+            os.environ['ANONYMIZER_NER_FAIL_ONCE_DONE'] = '1' if os.environ['ANONYMIZER_NER_FAIL'] == 'once' else ''
+            raise RuntimeError('test: name model failed to load')
         if not spacy.util.is_package('ru_core_news_lg'):
             raise RuntimeError(
                 "Модель ru_core_news_lg не установлена. "
@@ -1132,7 +1139,7 @@ def anonymize_text_pipeline(
         def _llm(t, *a):
             try:
                 from core.llm import apply_llm_pass
-                return apply_llm_pass(t, db_path, session_id, get_top_patterns(db_path, limit=20), exclusions)
+                return apply_llm_pass(t, db_path, session_id, exclusions)
             except Exception as ex:
                 log.error('llm_pass_failed', ex)
                 return t, {}
@@ -1399,8 +1406,11 @@ def make_rev_finder(db_path, session_id: str, occurrences: dict = None, file_key
         return out
 
     def prepare(full_text: str):
-        """Before writing: names in new text whose case the rules can't tell → one LLM request."""
+        """Before writing: names in new text whose case the rules can't tell → one LLM request - only when
+        «Использовать нейросеть» is on (question 2: one switch for checking and for cases)."""
         from core.cases import same_person_form, case_of_form
+        if not st.get('use_llm'):
+            return 0
         todo = []
         for line in full_text.split('\n'):
             ms = list(TOKEN_LOOSE_RE.finditer(line))
@@ -1452,6 +1462,42 @@ def anonymize_text(text: str, db_path, session_id: str, use_spacy: bool = True,
 
 def restore_text(text: str, db_path, session_id: str, occurrences: dict = None) -> str:
     return apply_spans(text, make_rev_finder(db_path, session_id)(text))
+
+
+def restore_pasted(text: str, db_path, session_id: str, use_llm: bool = None) -> dict:
+    """«Вернуть данные → Текст» (description 3.7, question 1): a reply of the neural network pasted as text.
+    Line by line, like the paragraphs of a file. Returns {'text', 'spans': [[start, end, mark]], 'stats'}:
+    mark exact / case / unknown - the colours of the preview; nothing is written to disk."""
+    from core import settings as user_settings
+    st = user_settings.get()
+    if use_llm is not None:
+        st['use_llm'] = use_llm
+    find = make_rev_finder(db_path, session_id, settings=st)
+    try:
+        find.prepare(text)
+    except Exception as ex:
+        from core import log
+        log.error('cases_prepare_failed', ex)
+    out, spans, pos = [], [], 0
+    for line in text.split('\n'):
+        known = {a: (b, v) for a, b, v in find(line)}
+        last = 0
+        for m in TOKEN_LOOSE_RE.finditer(line):
+            out.append(line[last:m.start()])
+            pos += m.start() - last
+            if m.start() in known:
+                _, v = known[m.start()]
+                spans.append([pos, pos + len(v), getattr(v, 'mark', 'exact')])
+                out.append(str(v))
+                pos += len(v)
+            else:
+                spans.append([pos, pos + len(m.group(0)), 'unknown'])
+                out.append(m.group(0))
+                pos += len(m.group(0))
+            last = m.end()
+        out.append(line[last:] + '\n')
+        pos += len(line) - last + 1
+    return {'text': ''.join(out)[:-1], 'spans': spans, 'stats': dict(find.stats)}
 
 
 def apply_reverse(text: str, reverse_map: dict) -> str:

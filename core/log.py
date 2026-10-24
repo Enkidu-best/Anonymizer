@@ -34,11 +34,10 @@ STALE_S = 120
 _current = contextvars.ContextVar('anonymizer_job', default=None)
 
 
-def default_dir(frozen: bool, project_dir: Path) -> Path:
+def default_dir() -> Path:
+    """Journal folder - outside the program, also when run from the sources (standard 6.4, was Р-35)."""
     if os.environ.get('ANONYMIZER_LOG_DIR'):
         return Path(os.environ['ANONYMIZER_LOG_DIR'])
-    if not frozen:
-        return project_dir / 'logs'
     if sys.platform == 'darwin':
         return Path.home() / 'Library' / 'Logs' / 'Anonymizer'
     if sys.platform == 'win32':
@@ -111,7 +110,8 @@ def startup_info(version: str, ollama: dict = None):
 class Job:
     """A processing job: stages with durations and counts, heartbeat, JSON summary."""
 
-    def __init__(self, kind: str, **info):
+    def __init__(self, kind: str, on_stage=None, **info):
+        self.on_stage = on_stage      # progress of the window: called with the name of every stage
         self.id = uuid.uuid4().hex[:12]
         self.kind = kind
         self.info = info
@@ -179,6 +179,8 @@ class _Stage:
 
     def __enter__(self):
         self.t0 = time.time()
+        if self.job.on_stage:
+            self.job.on_stage(self.name)
         return self
 
     def __exit__(self, exc_type, exc, tb):

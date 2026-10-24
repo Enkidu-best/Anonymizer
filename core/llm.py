@@ -9,6 +9,7 @@ Recommended models (install with: ollama pull <name>):
 
 import contextlib
 import json
+import os
 import re
 import time
 import threading
@@ -16,7 +17,7 @@ import urllib.request
 import urllib.error
 from typing import List, Tuple
 
-OLLAMA_URL   = 'http://localhost:11434'
+OLLAMA_URL   = os.environ.get('ANONYMIZER_OLLAMA_URL', 'http://localhost:11434')   # tests: a fake server
 DEFAULT_MODEL = 'qwen3.5:9b'   # Alibaba Qwen3.5, Apache-2.0; text + images, ~6.6 GB
 
 _lock        = threading.Lock()
@@ -163,8 +164,6 @@ DOB — даты рождения: "15 марта 1986 г.р.", "15.03.1986"
 НЕ трогай: ИНН, ОГРН, КПП, р/с, к/с, БИК — уже обработаны.
 НЕ трогай токены в квадратных скобках [TOKEN_N].
 
-{patterns_section}
-
 Верни ТОЛЬКО валидный JSON:
 {{"entities": [{{"text": "точный текст из документа", "type": "FIO|YUL|ADDR_PHYS|ADDR_CORP|PASSPORT|DOB"}}]}}
 """
@@ -173,14 +172,6 @@ DOB — даты рождения: "15 марта 1986 г.р.", "15.03.1986"
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _build_patterns_section(user_patterns: list) -> str:
-    if not user_patterns:
-        return ""
-    top = user_patterns[:20]
-    lines = [f'- "{p["pattern"]}" → {p["entity_type"]}' for p in top]
-    return "Дополнительные паттерны из документов пользователя:\n" + "\n".join(lines)
-
 
 CHUNK_SIZE = 3000          # larger now that masks compact the text
 OVERLAP    = 150
@@ -332,7 +323,6 @@ def _birth_context(text: str, value: str) -> bool:
 
 
 def apply_llm_pass(text: str, db_path, session_id: str,
-                   user_patterns=None,
                    exclusions: set = None) -> Tuple[str, dict]:
     """
     CRITICAL: this function applies found entities to the text and returns
@@ -349,13 +339,12 @@ def apply_llm_pass(text: str, db_path, session_id: str,
     print(f'[LLM] Starting LLM pass, model={model}')
 
     all_replacements = {}
-    patterns_section = _build_patterns_section(user_patterns or [])
 
     chunks = _chunk_text(text)
     _llm_progress.update({'active': True, 'chunk': 0, 'total': len(chunks),
                            'found': 0, 'session_id': session_id, 'cancel': False})
 
-    system_prompt = SYSTEM_PROMPT.format(patterns_section=patterns_section)
+    system_prompt = SYSTEM_PROMPT.format()
 
     for i, chunk in enumerate(chunks, 1):
         if _llm_progress.get('cancel'):
@@ -418,114 +407,6 @@ def apply_llm_pass(text: str, db_path, session_id: str,
                            'cancel': False, 'session_id': None})
     print(f'[LLM] Pass complete — {len(all_replacements)} new entities')
     return text, all_replacements
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pattern extraction
-# ─────────────────────────────────────────────────────────────────────────────
-
-def extract_and_save_patterns(db_path, session_id, original_text):
-    from core.db import get_session_mappings, save_user_pattern
-
-    CONTEXT_BEFORE = {
-        'ФИО':     ['гражданка рф', 'гражданин рф', 'в лице', 'директора',
-                     'подписал', 'именуемый', 'действующий', '/'],
-        'ЮЛ':      ['между', 'с одной стороны', 'именуемое', 'цедент',
-                     'цессионарий', 'заказчик', 'исполнитель'],
-        'АДРЕС':   ['зарегистрирован', 'проживает', 'место рождения',
-                     'по адресу', 'место жительства'],
-        'ПАСПОРТ': ['паспорт', 'серия', 'выдан', 'код подразделения'],
-    }
-    mappings = get_session_mappings(db_path, session_id)
-    saved = set()
-    for m in mappings:
-        etype = m['entity_type']
-        if etype in CONTEXT_BEFORE:
-            for keyword in CONTEXT_BEFORE[etype]:
-                pattern = f'{keyword} [{etype}]'
-                if pattern not in saved:
-                    save_user_pattern(db_path, pattern, etype)
-                    saved.add(pattern)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Chat command processing
-# ─────────────────────────────────────────────────────────────────────────────
-
-def process_chat_command(message: str, db_path, session_id: str) -> dict:
-    from core.db import (get_session_mappings, get_or_create_token,
-                         delete_mapping, update_mapping)
-
-    if not _llm_available:
-        return {'ok': False, 'message': 'Ollama недоступен'}
-
-    mappings = get_session_mappings(db_path, session_id)
-
-    ctx_lines = [f'{m["token"]} = {m["original_form"]} ({m["entity_type"]})'
-                 for m in (mappings or [])[:30]]
-    ctx = '\n'.join(ctx_lines) if ctx_lines else '(маппинг пуст)'
-
-    system = (
-        'Ты — помощник системы анонимизации. Пользователь описывает действие с базой маппингов. '
-        'Распознай намерение и верни ТОЛЬКО JSON без пояснений: '
-        '{"action": "add|delete|update", "text": "...", "type": "ФИО|ЮЛ|ИНН|...", '
-        '"token": "FIO_1", "canonical_form": "..."} '
-        'Поля заполняй только те, что нужны для данного action. '
-        'Если не можешь понять запрос — верни {"error": "не понял запрос"}.'
-    )
-
-    prompt = (
-        f'СУЩЕСТВУЮЩИЙ МАППИНГ:\n{ctx}\n\n'
-        f'ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {message}'
-    )
-
-    try:
-        raw = _ollama_generate(prompt, system, timeout=60)
-        raw = re.sub(r'```(?:json)?|```', '', raw).strip()
-        result = json.loads(raw)
-    except Exception as ex:
-        print(f'[LLM Chat] Parse error: {ex}')
-        return {'ok': False, 'message': f'Ошибка разбора ответа LLM: {ex}'}
-
-    if 'error' in result:
-        return {'ok': False, 'message': result['error']}
-
-    action = result.get('action')
-    try:
-        if action == 'add':
-            canonical = (result.get('text') or result.get('canonical_form') or '').strip()
-            entity_type = (result.get('type') or result.get('entity_type') or 'ЮЛ').strip()
-            if not canonical:
-                return {'ok': False, 'message': 'LLM не распознал значение'}
-            token = get_or_create_token(db_path, session_id, canonical, canonical, entity_type)
-            return {'ok': True, 'action': 'add', 'token': token,
-                    'canonical_form': canonical, 'entity_type': entity_type,
-                    'mappings': get_session_mappings(db_path, session_id)}
-
-        elif action == 'delete':
-            token = (result.get('token') or '').strip()
-            if not token:
-                return {'ok': False, 'message': 'LLM не распознал токен для удаления'}
-            delete_mapping(db_path, session_id, token)
-            return {'ok': True, 'action': 'delete', 'token': token,
-                    'mappings': get_session_mappings(db_path, session_id)}
-
-        elif action == 'update':
-            token = (result.get('token') or '').strip()
-            canonical = (result.get('canonical_form') or result.get('text') or '').strip()
-            entity_type = (result.get('type') or result.get('entity_type') or '').strip()
-            if not token:
-                return {'ok': False, 'message': 'LLM не распознал токен'}
-            update_mapping(db_path, session_id, token,
-                           {'canonical_form': canonical, 'entity_type': entity_type})
-            return {'ok': True, 'action': 'update', 'token': token,
-                    'mappings': get_session_mappings(db_path, session_id)}
-
-        else:
-            return {'ok': False, 'message': f'Неизвестное действие: {action}'}
-
-    except Exception as ex:
-        return {'ok': False, 'message': str(ex)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
