@@ -20,9 +20,10 @@ from common.lock import heavy_lock as hl
 
 OWNER = 'Anonymizer'
 WAIT = float(os.environ.get('ANONYMIZER_LOCK_WAIT', '60'))
-# «На процессоре» (add. 21:40): how many times slower Ollama is on the CPU than on the GPU of this Mac - a measurement
-# (until measured - an estimate); the forecast in the window = usual job time × factor
-CPU_FACTOR = float(os.environ.get('ANONYMIZER_CPU_FACTOR', '6'))
+# «На процессоре» (add. 21:40): how many times slower Ollama is on the CPU than on the GPU of this Mac; the forecast in
+# the window = usual job time × factor. Measured 24.10 («_общие модули/lock/замеры/ollama-2026-10-24-0941.json»): qwen3.5:9b, a 1,800-token request - 3.4,
+# reading the request - 4.2
+CPU_FACTOR = float(os.environ.get('ANONYMIZER_CPU_FACTOR', '4'))
 JOB_SEC = {'accurate': 60.0, 'llm_only': 120.0}     # usual job time on the GPU - for the forecast
 _local = threading.local()          # this thread: held - inside job(), cpu - «На процессоре»
 
