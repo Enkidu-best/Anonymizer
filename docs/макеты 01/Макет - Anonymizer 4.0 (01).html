@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Макет - Anonymizer 4.0 (задание 01)</title>
+<title>Макет - Anonymizer 4.0 (задание 01, утверждён с правками)</title>
 <style>
 /* Отличия токенов от LKD app.css (контраст 1.9): --ok темнее (#276b43, было 4,4 : 1 на --ok-soft), версия внизу меню - --muted.
    Макет задания 01 (описание v2 «как должно быть»). Каркас и токены - как в Legal Knowledge Desk web/static/app.css
@@ -188,6 +188,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9375rem; }
 .sw.on { background: var(--accent); } .sw.on::after { left: 18px; }
 :root[data-theme="dark"] .sw.on::after { background: #0f1218; }
 .collapsed { color: var(--muted); }
+.note-line { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin-bottom: 12px; font-size: .9375rem; background: var(--info-soft); color: var(--info); border-color: transparent; }
+.hint-i { display: inline-flex; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border-strong); font-size: .75rem; align-items: center; justify-content: center; color: var(--muted); }
+.paste { width: 100%; min-height: 150px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); padding: 12px 14px; font-size: .9375rem; color: var(--text); white-space: pre-wrap; }
+.result { background: var(--paper); color: var(--paper-text); border-radius: var(--radius); border: 1px solid var(--border); padding: 14px 18px; font-size: .9375rem; white-space: pre-wrap; }
+.rv-ok { background: #dff1e5; } .rv-case { background: #fbedcf; } .rv-bad { background: #fbe7e5; color: #8c1d18; }
 
 /* узкое окно (стандарт 1.6) */
 @media (max-width: 1100px) {
@@ -272,7 +277,7 @@ function table(n, total = 41) {
   return `<div class="sec"><div class="sec-h"><h2>${ic("chevron-down")}Таблица замен · ${total}</h2><span class="grow"></span>
     <span class="field" style="width:250px">${ic("search")}Найти: фамилия, ИНН</span>
     <span class="sel">Вид: все${ic("chevron-down")}</span><span class="btn">${ic("plus")}Добавить вручную</span></div>
-    <div class="card" style="overflow:hidden"><table class="tbl"><tr><th style="width:150px">Метка</th><th>В документе</th><th class="hide-narrow">Для нового текста</th><th style="width:150px">Вид</th><th style="width:40px"></th></tr>
+    <div class="card" style="overflow:hidden"><table class="tbl"><tr><th style="width:150px">Метка</th><th>В документе</th><th class="hide-narrow" title="ФИО - в именительном падеже, программа склонит сама">Начальная форма <span class="hint-i">?</span></th><th style="width:150px">Вид</th><th style="width:40px"></th></tr>
     ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td class="hide-narrow">${r[2]}</td><td class="muted">${r[3]}</td><td><span class="ib">${ic("ellipsis")}</span></td></tr>`).join("")}</table></div></div>`;
 }
 
@@ -311,7 +316,7 @@ S.done = () => {
   return head("Обезличить", ANON_SUB, `<span class="btn primary" disabled>${ic("eye-off")}Обезличить</span><span class="xs muted">Новых файлов нет</span>`)
     + sessline("3 файла", "41 запись") + strip
     + `<div class="card sum"><span class="big">${ic("shield-check")}Готово: 3 файла · 41 запись</span><span class="chip warn">${ic("triangle-alert")}Проверьте 1 файл</span><span class="grow"></span>
-       <span class="btn">${ic("download")}Скачать все (ZIP)</span><span class="btn">${ic("copy")}Инструкция для нейросети: Скопировать</span></div>`
+       <span class="btn">${ic("download")}Скачать все (ZIP)</span><span class="btn">${ic("copy")}Скопировать инструкцию для нейросети</span></div>`
     + `<div class="card list">`
     + frow("doc", "Договор поставки - Петров.docx", `${ic("check")}Найдено 14 · утечек нет · Договор поставки ${tok("FIO_1", "p")}.docx`, "ok", ACT_DONE)
     + frow("xls", "Реестр платежей сентябрь.xlsx", `${ic("triangle-alert")}Найдено 9 · проверьте 2 места - откройте «Просмотр»: там их можно замаскировать`, "warn", ACT_DONE)
@@ -319,7 +324,7 @@ S.done = () => {
     + `</div>` + table(5);
 };
 function previewBody(withSel) {
-  return `<div class="pvbar"><span class="fn">Договор поставки ${tok("FIO_1", "p")}.docx</span><span class="grow"></span>
+  return `<div class="pvbar"><span class="muted small">Скачается как:</span><span class="fn">Договор поставки ${tok("FIO_1", "p")}.docx</span><span class="grow"></span>
       <span class="field hide-narrow" style="width:260px">${ic("search")}Найти в тексте</span>
       <span class="check"><span class="box"></span>Показать исходный текст</span><span class="btn sm">${ic("download")}Скачать${ic("chevron-down")}</span></div>
     <div class="pv"><div class="doc"><div class="sheet">
@@ -348,11 +353,11 @@ function previewBody(withSel) {
     </div></div></div>`;
 }
 S.preview = () => {
-  menu("anon"); crumbs(["Обезличить", SESS, "Договор поставки [FIO_1].docx"], true); model("", "Модель готова");
+  menu("anon"); crumbs(["Обезличить", SESS, "Договор поставки - Петров.docx"], true); model("", "Модель готова");
   return previewBody(true);
 };
 S.unmask = () => {
-  menu("anon"); crumbs(["Обезличить", SESS, "Договор поставки [FIO_1].docx"], true); model("", "Модель готова");
+  menu("anon"); crumbs(["Обезличить", SESS, "Договор поставки - Петров.docx"], true); model("", "Модель готова");
   layer(`<div class="ov"><div class="dlg"><h2>Не маскировать «Петров Иван Сергеевич»?</h2>
     <p>В файлах значение останется открытым. Метка ${tok("FIO_1", "p")} пропадёт из текста, запись перейдёт в «Не маскируется» - её можно вернуть.</p>
     <div class="radio"><span class="rd on"></span>Только в этой сессии</div>
@@ -364,18 +369,28 @@ S.unmask = () => {
 S.restore = () => {
   menu("restore"); crumbs(["Вернуть данные", SESS + " · 3 файла"]); model("", "Модель готова");
   return head("Вернуть данные", "Загрузите ответ нейросети - метки заменятся значениями из выбранной сессии.", `<span class="btn primary" disabled>${ic("undo-2")}Вернуть данные</span><span class="xs muted">Новых файлов нет</span>`)
-    + `<div class="sessline"><span class="muted">Сессия:</span><span class="sel"><b>${SESS}</b> · 3 файла · 41 запись${ic("chevron-down")}</span></div>` + strip.replace("ещё файлы", "ответ нейросети")
+    + `<div class="sessline"><span class="muted">Сессия:</span><span class="sel"><b>${SESS}</b> · 3 файла · 41 запись${ic("chevron-down")}</span><span class="grow"></span><div class="seg"><span>Текст</span><span class="on">Файл</span></div></div>` + strip.replace("ещё файлы", "ответ нейросети")
     + `<div class="card sum"><span class="big">${ic("shield-check")}Готово: 2 файла · вернулось 52 значения</span><span class="chip bad">${ic("triangle-alert")}1 метка не найдена</span><span class="grow"></span><span class="btn">${ic("download")}Скачать все (ZIP)</span></div>`
     + `<div class="card list">`
-    + frow("doc", "Ответ нейросети - претензия.docx", `<span class="chip ok">31 точно</span><span class="chip warn">6 с подбором падежа</span><span>→ Претензия покупателю_restored.docx</span>`, "", ACT_DONE)
+    + frow("doc", "Ответ нейросети - претензия.docx", `<span class="chip ok">31 точно</span><span class="chip warn">6 с подбором падежа</span><span>→ Претензия покупателю (данные возвращены).docx</span>`, "", ACT_DONE)
     + frow("doc", "Ответ нейросети - письмо.docx", `<span class="chip ok">15 точно</span><span class="chip bad">не найдены в этой сессии: [FIO_9] - проверьте, та ли сессия выбрана</span>`, "", ACT_DONE)
     + `</div>`
     + `<div class="sec"><div class="card" style="padding:12px 16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap"><span class="muted small">В «Просмотре» вставленные значения подсвечены:</span><span class="chip ok">точно</span><span class="chip warn">падеж подобран - проверьте</span><span class="chip bad">метка не найдена</span></div></div>`;
+};
+S.restoretext = () => {
+  menu("restore"); crumbs(["Вернуть данные", SESS + " · 3 файла"]); model("", "Модель готова");
+  return head("Вернуть данные", "Вставьте ответ нейросети - метки заменятся значениями из выбранной сессии.", `<span class="btn primary">${ic("undo-2")}Вернуть данные</span>`)
+    + `<div class="sessline"><span class="muted">Сессия:</span><span class="sel"><b>${SESS}</b> · 3 файла · 41 запись${ic("chevron-down")}</span><span class="grow"></span><div class="seg"><span class="on">Текст</span><span>Файл</span></div></div>`
+    + `<div class="paste">Направляем [FIO_1] ответ на претензию ООО «[YUL_1]» от 3 сентября.\nПоставщик готов заменить товар по договору. Подписание соглашения поручено [FIO_2].</div>`
+    + `<div class="card sum" style="margin-top:12px"><span class="big">${ic("shield-check")}Вернулось 3: 1 точно, 2 с подбором падежа</span><span class="grow"></span><span class="btn">${ic("copy")}Скопировать</span></div>`
+    + `<div class="result">Направляем <span class="rv-case">Петрову Ивану Сергеевичу</span> ответ на претензию ООО <span class="rv-ok">«Северный ветер»</span> от 3 сентября.\nПоставщик готов заменить товар по договору. Подписание соглашения поручено <span class="rv-case">Сидоровой Анне Викторовне</span>.</div>`
+    + `<div class="sec"><div class="card" style="padding:12px 16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap"><span class="muted small">Подсвечено:</span><span class="chip ok">точно</span><span class="chip warn">падеж подобран - проверьте</span><span class="chip bad">метка не найдена</span><span class="muted small">Текст не сохраняется на диск.</span></div></div>`;
 };
 S.dict = () => {
   menu("dict"); crumbs(["Словарь"]); model("", "Модель готова");
   const rows = [["Петров Иван Сергеевич", "ФИО", "добавлено 24.10 вручную"], ["«Северный ветер»", "Организация", "добавлено 22.10 вручную"], ["Ковалёв Дмитрий", "ФИО", "20.10, до версии 4.0"], ["+7 900 000-00-17", "Телефон", "18.10, до версии 4.0"], ["ул. Лесная, д. 5", "Адрес", "15.10, до версии 4.0"]];
   return head("Словарь", "Действует во всех сессиях. Хранится отдельно от сессий: удаление сессии его не трогает.", `<span class="btn primary">${ic("plus")}Добавить</span>`)
+    + `<div class="card note-line">${ic("info")}<span>Перенесено 3 значения из прежней памяти - проверьте список</span><span class="grow"></span><span class="ib" title="Скрыть">${ic("x")}</span></div>`
     + `<div class="sessline"><div class="seg"><span class="on">Всегда маскировать · 12</span><span>Никогда не маскировать · 5</span></div><span class="grow"></span><span class="field" style="width:280px">${ic("search")}Найти значение</span></div>`
     + `<div class="card list">${rows.map(r => `<div class="row"><div class="main2"><div class="nm">${r[0]}</div><div class="meta">${r[1]} · ${r[2]}</div></div><div class="acts"><span class="ib" title="Убрать из Словаря">${ic("x")}</span></div></div>`).join("")}</div>`
     + `<div style="margin-top:12px; display:flex; gap:10px"><span class="link small">Очистить список…</span></div>`
@@ -412,7 +427,7 @@ S.settings = () => {
     + `<div class="card sgrp"><div class="gh"><h2>Хранение</h2></div>`
     + r("Хранить сессии", "Сессия удаляется целиком: оригиналы, файлы, таблица замен. За 3 дня - пометка в «Сессиях»", `<div class="seg"><span>7 дней</span><span class="on">30 дней</span><span>90 дней</span></div>`) + `</div>`
     + `<div class="card sgrp"><div class="gh">${ic("chevron-down")}<h2>Дополнительно</h2></div>`
-    + r("Использовать нейросеть", "Локальная нейросеть проверяет найденное и подбирает падеж в спорных местах. Медленнее; по замерам пользы почти нет. Работает в очереди видеокарты", `<span class="sw"></span>`) + `</div>`
+    + r("Использовать нейросеть", "Проверяет найденное и подбирает падеж в спорных местах. Медленнее, работает в очереди видеокарты", `<span class="sw"></span>`) + `</div>`
     + `<div class="card sgrp"><div class="gh collapsed">${ic("chevron-down").replace('class="i"', 'class="i" style="transform:rotate(-90deg)"')}<h2>Служебное</h2><span class="muted small">папка данных, журнал, режим диагностики, версия, остановить программу</span></div></div>`;
 };
 
