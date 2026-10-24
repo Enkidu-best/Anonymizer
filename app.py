@@ -202,6 +202,14 @@ def heavy_lock_status():
     return jsonify(heavy.status_json(request.args.get('kind', 'accurate')))
 
 
+@app.route('/api/heavy-lock/page', methods=['POST'])
+def heavy_lock_page():
+    """«Открыть страницу «Видеокарта»» from the queue window (shared module, README 12)."""
+    from common.lock import heavy_lock as hl
+    from core import heavy
+    return jsonify({'opened': hl.open_page(heavy.path())})
+
+
 @app.route('/common/lock/<path:name>')
 def common_lock_ui(name):
     """The window «Видеокарта занята» - shared module (common/lock/lock_ui: web/heavy-lock.js, .css and texts.json)."""

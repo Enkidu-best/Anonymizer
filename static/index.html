@@ -789,7 +789,8 @@ async function gpuChoice(kind) {
   try { st = await apiFetch('/api/heavy-lock?kind=' + kind); } catch { return 'wait'; }
   if (st.ours || (st.free && !(st.queue || []).length)) return 'wait';
   await HL.ready;
-  return HL.ask(st.holder, { lang: 'ru', cpu: st.cpu, queue: (st.queue || []).map(w => w.program) });
+  return HL.ask(st.holder, { lang: 'ru', cpu: st.cpu, queue: (st.queue || []).map(w => w.program),
+                             page: st.page ? '/api/heavy-lock/page' : null });
 }
 
 // значок LLM вверху: видеокарта у другой программы - «LLM: занята «Herald»» (слова общего модуля, стандарт 2.1)
