@@ -208,6 +208,11 @@ def common_buildinfo(name):
     return send_from_directory(BUNDLE_DIR / 'common' / 'buildinfo' / 'web', name)
 
 
+@app.route('/common/ui/<path:name>')
+def common_ui(name):
+    return send_from_directory(BUNDLE_DIR / 'common' / 'ui' / 'web', name)
+
+
 @app.route('/api/status')
 def status():
     """The line of the model state (standard 2.1): the name model; the neural network - only if switched on."""

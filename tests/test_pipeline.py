@@ -106,3 +106,21 @@ def test_all_session_tokens_unique_after_pipeline(tmp_db, session_id):
     mp2 = get_session_mappings(tmp_db, session_id)
     tokens2 = [m['token'] for m in mp2]
     assert len(tokens2) == len(set(tokens2)), f'Duplicate tokens after edits: {tokens2}'
+
+
+def test_individual_entrepreneur_surname_and_ogrnip(tmp_db, session_id):
+    """«ИП» / «индивидуальный предприниматель» + фамилия → метка ФИО, ОГРНИП (15 цифр) → своя метка OGRNIP
+    («Единый вид 02», п. 4; пропуск «ИП» + фамилия из прогона 245 с моделью 25.10)."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent / 'bench'))
+    import ids
+    og, ogip = ids.ogrn(), ids.ogrnip()
+    text = (f'Поставщик: ИП Гаврилов (ОГРНИП {ogip}), покупатель - ООО «Север» (ОГРН {og}). '
+            'Услуги оказывает ИП Кацнельс.')
+    out, _ = anonymize_text_pipeline(text, tmp_db, session_id, use_spacy=False, use_llm=False)
+    assert 'Гаврилов' not in out and 'Кацнельс' not in out
+    assert re.search(r'ИП \[FIO_\d+\] \(ОГРНИП \[OGRNIP_1\]\)', out), out
+    assert '[OGRN_1]' in out and ogip not in out and og not in out
+    types = {m['token']: m['entity_type'] for m in get_session_mappings(tmp_db, session_id)}
+    assert types['OGRNIP_1'] == 'ОГРНИП' and types['OGRN_1'] == 'ОГРН'

@@ -143,7 +143,7 @@ def org_key(text: str) -> str:
 
 def value_key(text: str, etype: str) -> str:
     digits = re.sub(r'\D', '', text)
-    if etype in ('ИНН', 'ОГРН', 'КПП', 'РС', 'КС', 'БИК', 'СНИЛС', 'КАРТА', 'ТЕЛЕФОН', 'ОКПО', 'ПОЛИС') and digits:
+    if etype in ('ИНН', 'ОГРН', 'ОГРНИП', 'КПП', 'РС', 'КС', 'БИК', 'СНИЛС', 'КАРТА', 'ТЕЛЕФОН', 'ОКПО', 'ПОЛИС') and digits:
         return digits[-10:] if etype == 'ТЕЛЕФОН' else digits
     if etype == 'ЮЛ':
         return org_key(text.replace('\xad', ''))
@@ -224,7 +224,7 @@ def _lev(a: str, b: str, limit: int) -> int:
     return prev[-1]
 
 
-_NUMBER_TYPES = {'ИНН', 'ОГРН', 'КПП', 'РС', 'КС', 'БИК', 'СНИЛС', 'ПАСПОРТ', 'КАДАСТР', 'НЕДВИЖ', 'ЕГРН',
+_NUMBER_TYPES = {'ИНН', 'ОГРН', 'ОГРНИП', 'КПП', 'РС', 'КС', 'БИК', 'СНИЛС', 'ПАСПОРТ', 'КАДАСТР', 'НЕДВИЖ', 'ЕГРН',
                  'ТЕЛЕФОН', 'КАРТА', 'IBAN', 'ОКПО', 'ПОЛИС', 'ВУ', 'РЕГНОМЕР', 'ГОСНОМЕР', 'VIN', 'SWIFT'}
 
 

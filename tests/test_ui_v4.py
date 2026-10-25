@@ -167,7 +167,7 @@ def open_page(browser, url, width=1440, height=900, clipboard=False):
     pg.errors = []
     pg.on('pageerror', lambda e: pg.errors.append(str(e)))
     pg.goto(url)
-    pg.wait_for_function("document.getElementById('model-t').textContent !== '…'")
+    pg.wait_for_function("(e => e && e.textContent !== '…')(document.querySelector('#model .ms-t'))")
     return pg
 
 
@@ -268,10 +268,17 @@ def test_K3_english_window(page):
 
 
 def test_K4_narrow_window(chromium, server):
-    """UC-K4: 900 px - меню значками, путь и шапка не обрезаны."""
-    pg = open_page(chromium, server.url, width=900)
+    """UC-K4: 900 × 800 - меню значками с подсказками (общий блок ui), главная кнопка видна, путь и шапка не обрезаны."""
+    pg = open_page(chromium, server.url, width=900, height=800)
     assert pg.evaluate("document.getElementById('side').getBoundingClientRect().width") == 60
     assert pg.evaluate("[...document.querySelectorAll('.mi span')].every(s => getComputedStyle(s).display === 'none')")
+    assert pg.evaluate("[...document.querySelectorAll('#side .mi')].every(m => m.title)")      # подсказки у значков
+    b = pg.evaluate("(() => { const r = [...document.querySelectorAll('.btn.primary')].find(e => e.offsetParent).getBoundingClientRect(); return [r.top, r.bottom]; })()")
+    assert 0 <= b[0] and b[1] <= 800, b                       # главная кнопка видна в 900 × 800
+    pg.set_viewport_size({'width': 1440, 'height': 900})       # широкое окно - меню снова с подписями
+    pg.wait_for_function("document.getElementById('side').getBoundingClientRect().width > 150")
+    pg.set_viewport_size({'width': 900, 'height': 800})
+    pg.wait_for_function("document.getElementById('side').getBoundingClientRect().width === 60")
     cut = pg.evaluate("""[...document.querySelectorAll('body *')].filter(e => e.children.length === 0 && e.textContent.trim()
         && getComputedStyle(e).overflow !== 'visible' && e.scrollWidth > e.clientWidth + 1).map(e => e.textContent.trim())""")
     assert not cut, cut
@@ -330,7 +337,7 @@ def test_A2_progress_stop_continue(chromium, tmp_path):
         pg.click('#go-anon')
         pg.wait_for_selector('#prog .bar')
         assert re.search(r'\d+ %', pg.inner_text('#prog')) and 'Файл 1 из 3' in pg.inner_text('#prog')
-        assert 'Работает: файл' in pg.inner_text('#model')
+        assert 'Работает: файл' in pg.inner_text('#model') and pg.get_attribute('#model', 'data-state') == 'working'
         pg.click('#p-stop')
         pg.wait_for_selector('text=Остановлено: готово', timeout=30000)
         m = re.search(r'готово (\d) из 3', pg.inner_text('#content'))
@@ -351,7 +358,7 @@ def test_A3_waits_for_name_model(chromium, tmp_path):
     try:
         pg = open_page(chromium, s.url)
         upload(pg, make_docx(tmp_path / 'Договор.docx'))
-        assert 'Готовлю распознавание имён' in pg.inner_text('#model')
+        assert 'Готовлю распознавание имён' in pg.inner_text('#model') and pg.get_attribute('#model', 'data-state') == 'loading'
         pg.click('#go-anon')
         pg.wait_for_selector('text=Готовлю распознавание имён… обработка начнётся сама')
         pg.wait_for_selector('#sum-anon', timeout=120000)
@@ -368,7 +375,10 @@ def test_A4_name_model_failed(chromium, tmp_path):
     try:
         s.wait_ner()
         pg = open_page(chromium, s.url)
-        assert 'Ошибка модели' in pg.inner_text('#model')
+        assert 'Ошибка модели' in pg.inner_text('#model') and pg.get_attribute('#model', 'data-state') == 'error'
+        pg.click('#model')                                     # общий блок ui: «Что случилось» и «Повторить»
+        assert 'не загрузилось' in pg.inner_text('#ms-pop') and pg.is_visible('#ms-pop .ms-retry')
+        pg.keyboard.press('Escape')
         upload(pg, make_docx(tmp_path / 'Договор.docx'))
         pg.click('#go-anon')
         pg.wait_for_selector('#p-noner')
@@ -508,10 +518,10 @@ def test_M3_unmask_filter_mask_again(page, server, tmp_path):
 
 
 def test_M4_type_filter_all_30(page, tmp_path):
-    """UC-M4: «Вид ▾» - 30 видов и «Не маскируется»; ИНН находит свои строки."""
+    """UC-M4: «Вид ▾» - 31 вид (с 4.0.1 - ОГРНИП) и «Не маскируется»; ИНН находит свои строки."""
     anon_one(page, tmp_path)
     opts = page.locator('#tbl-type option').all_inner_texts()
-    assert len(opts) == 32 and opts[0] == 'Вид: все' and opts[-1] == 'Не маскируется'
+    assert len(opts) == 33 and 'ОГРНИП' in opts and opts[0] == 'Вид: все' and opts[-1] == 'Не маскируется'
     page.select_option('#tbl-type', 'ИНН')
     rows = page.locator('#tbl-body tr').all_inner_texts()
     assert rows and all('ИНН' in r for r in rows)
@@ -871,8 +881,9 @@ def test_G1_gpu_busy_window_and_cancel_wait(chromium, tmp_path, fake_ollama):
         s.wait_ner()
         s.api('/api/settings', {'use_llm': True})
         pg = open_page(chromium, s.url)
-        pg.wait_for_function("document.getElementById('model-t').textContent.includes('Herald')")
-        assert pg.inner_text('#model-t') == 'Нейросеть: занята «Herald» - в очереди'
+        pg.wait_for_function("(e => e && e.textContent.includes('Herald'))(document.querySelector('#model .ms-t'))")
+        assert pg.inner_text('#model .ms-t') == 'Нейросеть: занята «Herald» - в очереди'
+        assert pg.get_attribute('#model', 'data-state') == 'queued'
         upload(pg, make_docx(tmp_path / 'Договор.docx'))
         pg.click('#go-anon')
         pg.wait_for_selector('.hl-dialog')

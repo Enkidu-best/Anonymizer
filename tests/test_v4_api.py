@@ -81,7 +81,7 @@ def test_info_version_matches_window(c):
     """Стандарт 6.5: /api/info = core/version = UI_VERSION окна; порт 8070 (6.3)."""
     from core.version import __version__
     info = c.get('/api/info').get_json()
-    assert info['version'] == __version__ == '4.0.0'
+    assert info['version'] == __version__ == '4.0.1'
     js = (ROOT / 'static' / 'js' / 'core.js').read_text(encoding='utf-8')
     assert f"const UI_VERSION = '{__version__}'" in js
 

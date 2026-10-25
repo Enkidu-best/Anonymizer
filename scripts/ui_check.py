@@ -215,7 +215,7 @@ def main() -> int:
                     pg = ctx.new_page()
                     pg.on('pageerror', lambda e: errors.append(str(e)))
                     pg.goto(URL)
-                    pg.wait_for_function("document.getElementById('model-t').textContent !== '…'")
+                    pg.wait_for_function("(e => e && e.textContent !== '…')(document.querySelector('#model .ms-t'))")
                     for title, step in SCREENS:
                         pg.keyboard.press('Escape')
                         go(pg, step, state)
@@ -229,7 +229,7 @@ def main() -> int:
             pg = ctx.new_page()
             pg.on('pageerror', lambda e: errors.append(str(e)))
             pg.goto(URL)
-            pg.wait_for_function("document.getElementById('model-t').textContent !== '…'")
+            pg.wait_for_function("(e => e && e.textContent !== '…')(document.querySelector('#model .ms-t'))")
             pg.evaluate("setLang('en')")
             pg.wait_for_timeout(500)
             for title, step in SCREENS:

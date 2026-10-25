@@ -1,7 +1,7 @@
 // Anonymizer 4.0 - основа окна: язык, тема, масштаб, каркас, окна программы, меню, строка состояния (описание 3.1, 4.x).
 // Все надписи - из словарей static/i18n/<язык>.json (стандарт 1.4); цвета - токенами app.css.
 'use strict';
-const UI_VERSION = '4.0.0';
+const UI_VERSION = '4.0.1';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const ic = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
@@ -46,14 +46,14 @@ const fmtDay = s => { const m = /^\d{4}-(\d{2})-(\d{2})/.exec(s || ''); return m
 const fmtDur = sec => { sec = Math.max(0, Math.round(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; };
 
 // ── Виды записей (описание 5.3) и метки ─────────────────────────────────────
-const TYPES = ['ФИО', 'ЮЛ', 'АДРЕС', 'ИНН', 'ОГРН', 'КПП', 'ОКПО', 'РС', 'КС', 'БИК', 'КАРТА', 'IBAN', 'SWIFT', 'ЛИЦЕНЗИЯ',
+const TYPES = ['ФИО', 'ЮЛ', 'АДРЕС', 'ИНН', 'ОГРН', 'ОГРНИП', 'КПП', 'ОКПО', 'РС', 'КС', 'БИК', 'КАРТА', 'IBAN', 'SWIFT', 'ЛИЦЕНЗИЯ',
   'ПАСПОРТ', 'СНИЛС', 'ВУ', 'ПОЛИС', 'ТЕЛЕФОН', 'EMAIL', 'НИК', 'URL', 'ДАТАРОЖД', 'КАДАСТР', 'ЕГРН', 'НЕДВИЖ', 'ГОСНОМЕР',
   'VIN', 'РЕГНОМЕР', 'НОТАРИУС'];
 const TYPE_ALIAS = { FIO: 'ФИО', YUL: 'ЮЛ', ADDR_PHYS: 'АДРЕС', ADDR_CORP: 'АДРЕС', 'АДРЕС_ФИЗ': 'АДРЕС', 'АДРЕС_ЮР': 'АДРЕС',
   PASSPORT: 'ПАСПОРТ', DOB: 'ДАТАРОЖД' };
 const typeCode = x => TYPE_ALIAS[x] || x;
 const typeLabel = x => { const c = typeCode(x); return DICT['types.' + c] ? t('types.' + c) : c; };
-const PREFIX_TYPE = { FIO: 'ФИО', YUL: 'ЮЛ', ADR: 'АДРЕС', INN: 'ИНН', OGRN: 'ОГРН', KPP: 'КПП', OKPO: 'ОКПО', RS: 'РС', KS: 'КС',
+const PREFIX_TYPE = { FIO: 'ФИО', YUL: 'ЮЛ', ADR: 'АДРЕС', INN: 'ИНН', OGRN: 'ОГРН', OGRNIP: 'ОГРНИП', KPP: 'КПП', OKPO: 'ОКПО', RS: 'РС', KS: 'КС',
   BIK: 'БИК', CARD: 'КАРТА', IBAN: 'IBAN', SWIFT: 'SWIFT', LIC: 'ЛИЦЕНЗИЯ', PASSPORT: 'ПАСПОРТ', SNILS: 'СНИЛС', DL: 'ВУ',
   OMS: 'ПОЛИС', TEL: 'ТЕЛЕФОН', EMAIL: 'EMAIL', NICK: 'НИК', URL: 'URL', DOB: 'ДАТАРОЖД', CAD: 'КАДАСТР', EGRN: 'ЕГРН',
   REALTY: 'НЕДВИЖ', CAR: 'ГОСНОМЕР', VIN: 'VIN', REG: 'РЕГНОМЕР', NOT: 'НОТАРИУС' };
@@ -173,6 +173,7 @@ async function setLang(l) {
   await loadLang(l);
   staticTexts();
   render();
+  renderBanner();              // полоса над окном - на новом языке
 }
 function staticTexts() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
@@ -304,20 +305,20 @@ function statusInfo() {
   const ner = st.ner || {};
   if (S.run) return { cls: 'work', text: S.run.section === 'anon' || S.run.section === 'restore' ? t('status.working', { i: Math.min(S.run.i + 1, S.run.list.length), n: S.run.list.length }) : t('status.rebuilding') };
   if (S.rebuild) return { cls: 'work', text: t('status.rebuilding') };
-  if (ner.loading) return { cls: 'work', text: t('status.ner_loading') };
+  if (ner.loading) return { cls: 'load', text: t('status.ner_loading') };
   if (ner.error) return { cls: 'err', text: t('status.ner_error') };
   if (st.use_llm && st.gpu && st.gpu.busy) return { cls: 'wait', text: t('status.llm_busy', { program: st.gpu.program || '?' }) };
   if (st.use_llm && st.llm && (!st.llm.available || !st.llm.has_model)) return { cls: 'off', text: t('status.llm_none') };
   if (!st.ner) return { cls: 'off', text: '…' };
   return { cls: '', text: t('status.ready') };
 }
+const MS_STATE = { '': 'ready', work: 'working', load: 'loading', wait: 'queued', off: 'off', err: 'error' };
 function renderStatus() {
+  // общий блок ui (ModelStatus): слова программы, цвет - по состоянию стандарта 2.1
   const s = statusInfo();
-  const el = $('model');
-  el.className = 'model ' + s.cls;
-  $('model-t').textContent = s.text;
+  ModelStatus.set({ state: MS_STATE[s.cls], text: s.text, detail: s.cls === 'err' ? statusLines().join(' · ') : '' });
 }
-function statusPop() {
+function statusLines() {
   const st = S.status || {};
   const ner = st.ner || {};
   const lines = [ner.ready ? t('status.pop_ner_ready') : ner.loading ? t('status.pop_ner_loading') : t('status.pop_ner_error')];
@@ -325,11 +326,10 @@ function statusPop() {
   else if (st.gpu && st.gpu.busy) lines.push(t('status.pop_llm_busy', { program: st.gpu.program || '?' }));
   else if (st.llm && st.llm.available && st.llm.has_model) lines.push(t('status.pop_llm_ready', { model: st.llm.model }));
   else lines.push(t('status.pop_llm_none', { model: (st.llm && st.llm.model) || '' }));
-  popup($('model'), lines.map(x => `<div class="ptxt">${esc(x)}</div>`).join('') +
-    (ner.error && !ner.loading ? `<hr><button class="mitem" id="ner-retry">${ic('refresh-cw')}${esc(t('status.retry'))}</button>` : ''), p => {
-    const b = p.querySelector('#ner-retry');
-    if (b) b.onclick = () => { closePop(); nerRetry(); };
-  });
+  return lines;
+}
+function statusPop() {          // подробности по щелчку; при ошибке - окно общего блока («Что случилось», «Повторить»)
+  popup($('model'), statusLines().map(x => `<div class="ptxt">${esc(x)}</div>`).join(''));
 }
 async function nerRetry() {
   try { await api('/api/ner-retry', { json: {} }); } catch { /* сеть */ }
@@ -425,10 +425,12 @@ function bindFrame() {
   $('mi-help').onclick = () => go('help');
   $('mi-settings').onclick = () => go('settings');
   $('mi-theme').onclick = cycleTheme;
-  $('collapse').onclick = () => $('side').classList.toggle('collapsed');
+  let menuByHand = false;      // свёрнуто кнопкой - в широком окне остаётся свёрнутым
+  $('collapse').onclick = () => { menuByHand = $('side').classList.toggle('collapsed'); };
+  NarrowMenu.bind('#side', { cls: 'collapsed', items: '.mi', keep: () => menuByHand });
   $('lang').querySelectorAll('button').forEach(b => b.onclick = () => setLang(b.dataset.lang));
   $('zoom').onclick = e => zoomPop(e.currentTarget);
-  $('model').onclick = statusPop;
+  ModelStatus.mount('#model', { onClick: statusPop, onRetry: nerRetry });
   document.addEventListener('keydown', e => {
     if (!(e.metaKey || e.ctrlKey)) return;
     if (e.key === '=' || e.key === '+') { e.preventDefault(); stepZoom(1); }

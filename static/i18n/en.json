@@ -387,6 +387,7 @@
   "types.АДРЕС": "Address",
   "types.ИНН": "Tax number (INN)",
   "types.ОГРН": "State reg. number (OGRN)",
+  "types.ОГРНИП": "Sole trader reg. number (OGRNIP)",
   "types.КПП": "Tax reg. code (KPP)",
   "types.ОКПО": "Statistics code (OKPO)",
   "types.РС": "Settlement account",

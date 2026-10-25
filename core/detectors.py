@@ -76,7 +76,7 @@ def _numeric(text: str) -> List[Hit]:
         elif n == 13 and V.ogrn(d):
             hits.append(Hit(s, e, 'ОГРН'))
         elif n == 15 and V.ogrnip(d):
-            hits.append(Hit(s, e, 'ОГРН'))
+            hits.append(Hit(s, e, 'ОГРНИП'))
         elif n == 9 and (_KPP_CTX.search(left) and not re.search(r'БИК[^\S\n]*:?[^\S\n]*$', left, _I)
                          or any(_SEP_AFTER_INN.match(text[ie:s] or 'x') for ie in inn_ends)):
             hits.append(Hit(s, e, 'КПП'))
@@ -119,6 +119,8 @@ def _spaced_numbers(text: str) -> List[Hit]:
             hits.append(Hit(m.start(), m.end(), 'ИНН'))
         elif len(d) == 13 and V.ogrn(d):
             hits.append(Hit(m.start(), m.end(), 'ОГРН'))
+        elif len(d) == 15 and V.ogrnip(d):
+            hits.append(Hit(m.start(), m.end(), 'ОГРНИП'))
         elif len(d) == 11 and d[0] in '78' and d[1] in '3489' and _PHONE_CTX.search(left):
             hits.append(Hit(m.start(), m.end(), 'ТЕЛЕФОН'))
     return hits
@@ -424,7 +426,10 @@ def _keyword_numbers(text: str) -> List[Hit]:
         lo, hi = _KW_LEN[m.group(1)]
         d = V.digits(m.group(2))
         if lo <= len(d) <= hi:
-            hits.append(Hit(m.start(2), m.end(2), {'ОГРНИП': 'ОГРН'}.get(m.group(1), m.group(1))))
+            kind = m.group(1)
+            if kind == 'ОГРН' and len(d) == 15 and V.ogrnip(d):
+                kind = 'ОГРНИП'                    # «ОГРН ИП: …» - 15 цифр предпринимателя
+            hits.append(Hit(m.start(2), m.end(2), kind))
     return hits
 
 
@@ -587,6 +592,9 @@ def _to_cyr(word: str) -> str:
 _CAP = r'[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?'
 _WORD_CAP = re.compile(r'(?<![\wА-Яа-яЁё.])' + _CAP + r'(?![\wА-Яа-яЁё])', _U)
 _INIT1 = re.compile(r'[^\S\n]*([А-ЯЁ]\.(?:[^\S\n]*[А-ЯЁ]\.)?)', _U)
+# сразу после «ИП» / «индивидуальный предприниматель» - всегда человек: фамилия, даже если она и имя («Гаврилов»)
+# или её нет в словаре («Кацнельс»)
+_IP_CTX = re.compile(r'(?<![А-Яа-яЁё])(?:ИП|[Ии]ндивидуальн\w+[^\S\n]+предпринимател\w+)[^\S\n]+$', _U)
 _ROLE_CTX = re.compile(
     r'(?:директор\w*|заявител\w*|ответчик\w*|истц\w*|ист[её]ц|представител\w*|'
     r'председател\w*|секретар\w*|гражданин\w*|гражданк\w*|руководител\w*|'
@@ -676,6 +684,9 @@ def _persons(text: str) -> List[Hit]:
         if (_is_surn(w) and not _is_name(w) and 'Geox' not in _tags(w)
                 and _ROLE_CTX.search(_left(text, s, 60))):
             hits.append(Hit(s, e, 'ФИО'))
+        elif (not caps and 'Geox' not in _tags(w) and (_is_surn(w) or _unknown(w) or _SURN_END.search(w))
+              and _IP_CTX.search(_left(text, s, 60))):
+            hits.append(Hit(s, e, 'ФИО'))                  # ИП Гаврилов, индивидуальным предпринимателем Кацнельсом
         i += 1
     for m in _TURKIC.finditer(text):
         hits.append(Hit(m.start(1), m.end(1), 'ФИО'))

@@ -100,7 +100,7 @@ def _p(pattern):
 
 
 _TOKEN_PREFIXES = (
-    'FIO', 'YUL', 'INN', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
+    'FIO', 'YUL', 'INN', 'OGRNIP', 'OGRN', 'KPP', 'RS', 'KS', 'BIK', 'SNILS',
     'PASSPORT', 'TEL', 'EMAIL', 'SWIFT', 'ADR', 'DOB', 'LIC', 'URL',
     'CARD', 'IBAN', 'CAD', 'CAR', 'VIN', 'OKPO', 'OMS', 'DL', 'NICK', 'NOT', 'REALTY', 'EGRN', 'REG',
     'ДАТАРОЖД',
@@ -346,13 +346,15 @@ REGEX_PATTERNS: List[Tuple[str, list]] = [
         (_p(r'ИНН[^\S\n]*[:=\-]?[^\S\n]*(\d{10}|\d{12})\b'), 1),
         (_p(r'ИНН[^\S\n]*/[^\S\n]*(?:КПП|ОГРН)[^\S\n]*[:=]?[^\S\n]*(\d{10}|\d{12})[^\S\n]*/'), 1),
     ]),
+    ('ОГРНИП', [
+        (_p(r'ОГРН(?:[^\S\n]*ИП)?[^\S\n]*[:=]?[^\S\n]*(\d{15})\b'), 1),
+        (_p(r'(?<!\d)(3\d{14})(?!\d)'), 1),
+    ]),
     ('ОГРН', [
-        (_p(r'ОГРНИП[^\S\n]*[:=]?[^\S\n]*(\d{15})\b'), 1),
         (_p(r'ОГРН[^\S\n]*[:=]?[^\S\n]*(\d{13})\b'), 1),
         (_p(r'основной[^\S\n]+(?:государственный[^\S\n]+)?регистрационный[^\S\n]+номер[^\S\n]*[:№=]?[^\S\n]*(\d{13,15})\b'), 1),
         (_p(r'(?:ИНН|КПП)[^\S\n]*/[^\S\n]*ОГРН[^\S\n]*[:=]?[^\S\n]*\d{9,12}[^\S\n]*/[^\S\n]*(\d{13,15})\b'), 1),
         (_p(r'(?<!\d)([15]\d{12})(?!\d)'), 1),
-        (_p(r'(?<!\d)(3\d{14})(?!\d)'), 1),
     ]),
     ('КПП', [
         (_p(r'КПП[^\S\n]*[:=]?[^\S\n]*(\d{9})\b'), 1),
@@ -1201,7 +1203,7 @@ def _record_org_forms(text: str, reps: Dict[str, str], db_path, session_id: str)
 
 
 # Russian spellings an external LLM may use for token prefixes
-_RU_PREFIX = {'ФИО': 'FIO', 'ЮЛ': 'YUL', 'ИНН': 'INN', 'ОГРН': 'OGRN', 'КПП': 'KPP',
+_RU_PREFIX = {'ФИО': 'FIO', 'ЮЛ': 'YUL', 'ИНН': 'INN', 'ОГРНИП': 'OGRNIP', 'ОГРН': 'OGRN', 'КПП': 'KPP',
               'ТЕЛ': 'TEL', 'АДР': 'ADR', 'АДРЕС': 'ADR', 'ПАСПОРТ': 'PASSPORT', 'БИК': 'BIK',
               'СНИЛС': 'SNILS', 'РС': 'RS', 'КС': 'KS'}
 _PFX_ALL = sorted(set(_TOKEN_PREFIXES) | set(_RU_PREFIX), key=len, reverse=True)

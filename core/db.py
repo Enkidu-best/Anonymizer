@@ -172,14 +172,7 @@ def _dedupe_duplicate_tokens(conn):
                 "SELECT token FROM mappings WHERE session_id=? AND token LIKE ?",
                 (sid, f'{prefix}_%')
             ).fetchall()
-            max_n = 0
-            for r in existing:
-                try:
-                    n = int(r['token'].rsplit('_', 1)[1])
-                    if n > max_n:
-                        max_n = n
-                except (ValueError, IndexError):
-                    pass
+            max_n = _max_suffix(existing, prefix)
             new_tok = f'{prefix}_{max_n + 1}'
             conn.execute('UPDATE mappings SET token=? WHERE id=?', (new_tok, extra['id']))
             print(f'[DB] Renamed duplicate {bad_tok} -> {new_tok} (session {sid[:8]})')
@@ -267,6 +260,7 @@ _PREFIX = {
     'ЮЛ':       'YUL',
     'ИНН':      'INN',
     'ОГРН':     'OGRN',
+    'ОГРНИП':   'OGRNIP',
     'КПП':      'KPP',
     'РС':       'RS',
     'КС':       'KS',
@@ -311,15 +305,17 @@ def _next_token_number(conn, session_id: str, prefix: str) -> int:
         "SELECT token FROM mappings WHERE session_id=? AND token LIKE ?",
         (session_id, f'{prefix}_%')
     ).fetchall()
+    return _max_suffix(rows, prefix) + 1
+
+
+def _max_suffix(rows, prefix: str) -> int:
+    """Largest number among tokens of exactly this prefix: «LIKE 'OGRN_%'» also matches OGRNIP_1 (_ = any char)."""
     max_n = 0
     for r in rows:
-        try:
-            n = int(r['token'].rsplit('_', 1)[1])
-            if n > max_n:
-                max_n = n
-        except (ValueError, IndexError):
-            pass
-    return max_n + 1
+        head, _, num = r['token'].strip('[]').rpartition('_')
+        if head == prefix and num.isdigit():
+            max_n = max(max_n, int(num))
+    return max_n
 
 
 def _same_entity_token(conn, session_id, original, etype):
